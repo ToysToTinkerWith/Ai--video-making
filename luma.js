@@ -1,6 +1,6 @@
 import fs from "fs";
 import https from "https"
-import OpenAI from "openai";
+import OpenAI, { toFile } from "openai";
 
 
 import ffmpegPath from "@ffmpeg-installer/ffmpeg"
@@ -31,7 +31,7 @@ import { getStorage } from "firebase/storage"
 import { ref, uploadBytes, uploadBytesResumable, getDownloadURL, listAll } from "firebase/storage";
 
 const firebaseConfig = {
-  
+ 
 }
 
 let firebase_app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
@@ -41,11 +41,11 @@ const storage = getStorage(firebase_app)
 var video = new ffmpeg('aoe2.mp4')
 
 const openai = new OpenAI({
-    apiKey: ""
+   
 });
 
 const client = new LumaAI({
-    authToken: ""
+    
 });
 
 let videoLength = 975
@@ -129,161 +129,53 @@ const uploadScreenshotImages = async () => {
 }
 
 
-const ScreenshotToStory = async () => {
-    try {
+const ScreenshotsToStoryImage = async () => {
 
+  // Folder path
+  const folderPath = './screenshots';
+
+  let count = 0
+
+  // Read directory
+  fs.readdir(folderPath, async (err, files) => {
+    if (err) return console.error('Error reading folder:', err);
+
+    files.forEach(async (fileName) => {
+      const filePath = path.join(folderPath, fileName);
+
+      console.log(fileName)
       
+      // Make sure it's a file (optional)
+      if (fs.lstatSync(filePath).isFile()) {
+        const readStream = fs.createReadStream(filePath);
 
-    // 1) Create a reference to the folder
-      const folderRef = ref(storage, "uploads/");
 
-      // 2) List all items (files) in that folder
-      const result = await listAll(folderRef);
-
-      // 3) For each item, get the download URL
-      const urlPromises = result.items.map((itemRef) => getDownloadURL(itemRef));
-      const urls = await Promise.all(urlPromises);
-
-      function getSecondNumber(str) {
-        const matches = str.match(/\d+/g); // all digit sequences
-        if (matches && matches.length >= 2) {
-          return parseInt(matches[4], 10); // second match
-        }
-        return Infinity; // fallback if second number doesn't exist
-      }
-      
-      // Sort using the second number
-      urls.sort((a, b) => {
-        return getSecondNumber(a) - getSecondNumber(b);
-      });
-
-      let prevStory = "The bulagrian villagers began their day, their thoughts on their newly discovered decentralized currency: Dark Coin"
-      
-      let count = 1
-
-      console.log(urls)
-
-      while (count < urls.length) {
-
-        let text = "The game is Age of Empires 2.  The player being shown is 'Dark Coin'. Create a story based on the first image going to the second. Just return the text of the story. Dark Coin is red color, his enemy is in the Blue color. "
-    
-        let darkCoinDetails = [
-            "Dark Coin (ASA-1088771340) Dark Coin is an innovative community-driven project within the Algorand ecosystem, focused on expanding the possibilities of Algorand Standard Assets (ASAs) in the decentralized finance (DeFi) space. It operates as a decentralized autonomous organization (DAO), giving collective ownership and democratic management power to its members through blockchain-enforced rules. Key Features: Decentralized Governance: Dark Coin enables users to actively participate in shaping the project's future. Through our dApp, users can cast votes and submit proposals using NFT-based voting tokens. This allows the community to influence decisions on project direction, governance, and asset management. Character NFT Assets and AI Arena: Unique character NFT assets that can be engaged in battles within the Dark Coin AI Arena, providing an engaging and interactive experience for users. Governance and Control: The Dark Coin team is developing a user-friendly dApp accessible via (https://dark-coin.com), where members can participate in governance processes, propose changes, and vote on key decisions. Empowering the Community: Dark Coin is committed to empowering its community by providing the tools and mechanisms necessary for active participation, influence, and contribution. Through our DAO structure and decentralized governance, we strive to create a collaborative environment that benefits all members.",
-            "Join us in shaping the future of decentralized finance on the Algorand network! Dark Coin is an experimental grassroots community project focused on expanding the Algorand DeFi ecosystem. Managed by a decentralized autonomous organization (DAO), Dark Coin's users collectively own and manage the project based on blockchain-enforced rules and smart contracts. The Council is an app integrated with Dark Coin, designed to let users vote on proposals using their DAO NFTs. It involves creating proposals, amending them, and voting to decide their fate. Anyone can create a proposal by sending 20 Algo to the Council smart contract. Once this is done, a separate contract is made for the specific proposal, which holds the 20 Algo.",
-            "The Arena is a Dark Coin application where users can battle using their Dark Coin champion NFTs for fame, glory, and Dark Coin rewards. Dark Coin champion NFTs use Algorand's ARC-19 standard, allowing for swappable traits. Visit the trait swapper inside the Arena to mix and match the look of your champion. Equipped traits are sent to a contract for holding. Unequipped traits are sent to the user's wallet. When ready for battle, go to the select tab inside the Arena. Select the champion you wish to use in the battle. Start a new battle. Join a Battle: Join an already initialized battle. Both parties must pay a 10,000 Dark Coin wager plus an additional 0.1 Algo fee. When a champion joins an existing battle, the Arena contract determines the winner. The winner receives the combined 20,000 Dark Coin wager. Using AI, the app generates a battle story describing the victory. The app also creates an image depicting the two champions in battle. Battle results are displayed in a dedicated Discord channel.",
-        ]     
-
-        let darkCoin = "These are details about Dark Coin: " + darkCoinDetails[Math.floor(Math.random() * 3)]
-
-        console.log("count: " + String(count))
-
-        let responseEvent = await openai.chat.completions.create({
-            model: "gpt-4o",
-            messages: [
-            {
-                role: "user",
-                content: [
-                  { 
-                    type: "text", 
-                    text: "Create a one sentence story based on what you see in the provided image. Make sure the story relates to what is happening in the image. Relate the story to what has happened before, but return a new one sentence addition to the story. Only return one sentence. Begin each section of the story differently with a new sentence structure than the previous story. Each story should relate to the decentralized currecy: Dark Coin. The past story was : " + prevStory
-                  },
-                  {
-                      type: "image_url",
-                      image_url: {
-                      "url": urls[count],
-                      },
-                  },
-                    
-                    
-                ],
-            },
-            ],
-            temperature: 0.5
+        const response = await openai.images.edit({
+            model: "gpt-image-1",
+            image: await toFile(readStream, null, {
+                type: "image/png",
+            }),
+            prompt: "Create a close up scene of something that is happening in this image. Relate it to Dark Coin, a coin with a crescent moon on it.",
+            quality: "high",
+            size: "1024x1024"
         });
-
-        console.log(responseEvent.choices[0].message.content)
-
-        let chat = responseEvent.choices[0].message.content
-
-        prevStory = chat
-
-        // let allVoices = ["onyx"]
-    
-        // let dialogue = {
-        //     "line": chat,
-        //     "voice": allVoices[Math.floor(Math.random() * allVoices.length)]
-        // }
-
-        // console.log(dialogue)
-
-        // let speechFile = path.resolve("audio/cast" + String(count) + ".mp3");
-
-        // if (count > 0) {
-        //     fs.appendFile('./audiolist.txt', "file audio/cast" + String(count) + ".mp3" + "\n", err => {
-        //         if (err) {
-        //             console.error(err);
-        //         } else {
-        //             // file written successfully
-        //         }
-        //         });
-        // }
-        // else {
-        //     fs.writeFile('./audiolist.txt', "file audio/cast" + String(count) + ".mp3" + "\n", err => {
-        //         if (err) {
-        //             console.error(err);
-        //         } else {
-        //             // file written successfully
-        //         }
-        //         });
-        // }
-    
-        // let mp3 = await openai.audio.speech.create({
-        //     model: "tts-1",
-        //     voice: dialogue.voice,
-        //     input: dialogue.line,
-        // });
-        // let buffer = Buffer.from(await mp3.arrayBuffer());
-        // console.log(speechFile)
-        // await fs.promises.writeFile(speechFile, buffer);
-
-        const responseImage = await openai.images.generate({
-          model: "dall-e-3",
-          prompt: chat + " The style of the image should look realisitic, like a picture from reality. All friendly characters should be dressed in blue garb.",
-          n: 1,
-          size: "1792x1024",
-        });
-
-        console.log(responseImage)
-    
-        const genUrl = responseImage.data[0].url;
-
-        const file = fs.createWriteStream("./extras/" + String(count * 30) + ".png");
-        https.get(genUrl, (response) => {
-        response.pipe(file);
-        file.on('finish', () => {
-            file.close();
-            console.log('Download completed!');
-
             
-            
-        });
-        }).on('error', (err) => {
-        fs.unlinkSync("./extras/" + String((count + 1) * 30) + ".png");
-        console.error('Error downloading the file:', err.message);
-        });
+        console.log(response.data[0].b64_json)
 
-        count++
+        fs.writeFile('./images/' + String(fileName.substring(13)), response.data[0].b64_json, 'base64', (err) => {
+          if (err) throw err;
+          console.log('Saved.');
+        });
         
+        // Example: Log file name
+        
+        // Example: Do something with the stream
+        // readStream.pipe(...);
       }
-
-      console.log(stories)
-
- 
-
-
-    } catch (error) {
-      console.error("Error listing images:", error);
-    }
+      count++
+    });
+  });
+    
 
 }
 
@@ -381,8 +273,6 @@ const urlsVideo = async () => {
         return getSecondNumber(a) - getSecondNumber(b);
         });
 
-        urlsUploads = urlsUploads.slice(1)
-
       // 1) Create a reference to the folder
       const folderRef = ref(storage, "gens/");
 
@@ -407,6 +297,7 @@ const urlsVideo = async () => {
 
         let generation = await client.generations.create({
             prompt: "camera zoom in",
+            model: "ray-2",
             keyframes: {
                 frame0: {
                     type: "image",
@@ -437,17 +328,18 @@ const urlsVideo = async () => {
         let videoUrl = generation.assets.video;
     
         let response = await fetch(videoUrl);
-        let fileStream = fs.createWriteStream(`./begginings/${(count + 1) * 30}.mp4`);
+        let fileStream = fs.createWriteStream(`./begginings/${count * 30}.mp4`);
         await new Promise((resolve, reject) => {
             response.body.pipe(fileStream);
             response.body.on('error', reject);
             fileStream.on('finish', resolve);
         });
     
-        console.log(`File downloaded as ${(count + 1) * 30}.mp4`);
+        console.log(`File downloaded as ${count * 30}.mp4`);
 
         generation = await client.generations.create({
-            prompt: "camera zoom out",
+            prompt: "static",
+            model: "ray-2",
             keyframes: {
                 frame0: {
                   type: "generation",
@@ -474,17 +366,18 @@ const urlsVideo = async () => {
         videoUrl = generation.assets.video;
     
         response = await fetch(videoUrl);
-        fileStream = fs.createWriteStream(`./extends/${(count + 1) * 30}.mp4`);
+        fileStream = fs.createWriteStream(`./extends/${count * 30}.mp4`);
         await new Promise((resolve, reject) => {
             response.body.pipe(fileStream);
             response.body.on('error', reject);
             fileStream.on('finish', resolve);
         });
     
-        console.log(`File downloaded as ${(count + 1) * 30}.mp4`);
+        console.log(`File downloaded as ${count * 30}.mp4`);
 
         generation = await client.generations.create({
             prompt: "camera zoom out",
+            model: "ray-2",
             keyframes: {
                 frame0: {
                   type: "generation",
@@ -515,14 +408,14 @@ const urlsVideo = async () => {
         videoUrl = generation.assets.video;
     
         response = await fetch(videoUrl);
-        fileStream = fs.createWriteStream(`./ends/${(count + 1) * 30}.mp4`);
+        fileStream = fs.createWriteStream(`./ends/${count * 30}.mp4`);
         await new Promise((resolve, reject) => {
             response.body.pipe(fileStream);
             response.body.on('error', reject);
             fileStream.on('finish', resolve);
         });
     
-        console.log(`File downloaded as ${(count + 1) * 30}.mp4`);
+        console.log(`File downloaded as ${count * 30}.mp4`);
 
         count++
         
@@ -593,7 +486,7 @@ const getAudioFromUrls = async () => {
                     },
                     { 
                         type: "text", 
-                        text: "Create an extremely short monolouge that is only 2 sentences long, that relates to what is happening in the image. Only return what the person says." + darkCoin
+                        text: "Create an extremely short monolouge that is only 2 sentences long, that relates to what is happening in the image. Relate it to the decentralized currency Dark Coin."
                     },
                     
                 ],
@@ -925,6 +818,7 @@ function interleaveClips(folder1, folder2, outputPath) {
   
       // For each audio clip, delay it by (offset * 1000) ms
       audioClips.forEach((clip, index) => {
+        console.log(clip)
         const inputIndex = index + 1;  // main video = input #0, audio clips start at #1
         const delayMs = clip.offset * 1000;
         // e.g. [1]adelay=3000|3000[a0]
@@ -974,13 +868,15 @@ function interleaveClips(folder1, folder2, outputPath) {
 
     //uploadScreenshotImages()
 
-    //ScreenshotToStory()
+    //ScreenshotsToStoryImage()
 
     //uploadStoryImages()
 
     //urlsVideo()
 
-      //splitLongerVideo("aoe2.mp4", "segments")
+    //getAudioFromUrls()
+
+    //splitLongerVideo("aoe2.mp4", "segments")
 
 
       // (async () => {
@@ -990,16 +886,16 @@ function interleaveClips(folder1, folder2, outputPath) {
       // })();
 
 
-    //   (async () => {
-    //     const inputFolder = path.join(__dirname, 'tempB');
-    //     const outputFolder = path.join(__dirname, 'tempC');
+      // (async () => {
+      //   const inputFolder = path.join(__dirname, 'tempB');
+      //   const outputFolder = path.join(__dirname, 'tempC');
       
-    //     await addSilentAudioToFolder(inputFolder, outputFolder);
-    //     console.log('All done!');
-    //   })();
+      //   await addSilentAudioToFolder(inputFolder, outputFolder);
+      //   console.log('All done!');
+      // })();
 
 
-    //interleaveClips('./tempA', './tempC', 'final_merged.mp4');
+    //interleaveClips('./tempC', './tempA', 'final_merged.mp4');
 
   
     getFilenamesInDir('./audio')
@@ -1019,7 +915,7 @@ function interleaveClips(folder1, folder2, outputPath) {
           return numA - numB;
         });
         console.log(sortedFiles)
-        let offset = 30
+        let offset = 1
         let finalFiles = []
         sortedFiles.forEach((file) => {
           finalFiles.push({path: "audio/" + file, offset: offset})
