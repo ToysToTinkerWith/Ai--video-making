@@ -55,10 +55,10 @@ const STATS_ZOOM_BUMP   = 0.15
 const VICTORY_ZOOM_MAX  = 2.25
 
 // Boards placement
-const STAT_BOARD_TOP_GAP     = 20
-const MOVE_BOARD_BOTTOM_GAP  = 22
+const STAT_BOARD_TOP_GAP     = 48
+const MOVE_BOARD_BOTTOM_GAP  = 48
 const STATS_PANEL_CLEARANCE  = 16
-const PANEL_SIDE_MARGIN_PX   = 8
+const PANEL_SIDE_MARGIN_PX   = 24
 
 // Pan down less when showing stats
 const STATS_PREFERRED_OFFSET_FRACTION = 0.005
@@ -86,6 +86,7 @@ const VICTORY_BANNER_TOP    = 48
 // Audio
 const MASTER_GAIN = 0.5
 const EFFECT_ATTEN = 0.5
+const MUSIC_GAIN = 0.5
 
 /* ===================== YOUTUBE/OAUTH CONFIG ===================== */
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID
@@ -634,7 +635,7 @@ async function genImage(prompt, size = '1024x1024', transparent = true) {
     prompt,
     size,
     background: transparent ? 'transparent' : undefined,
-    quality: 'low',
+    quality: 'medium',
     n: 1
   })
   const b64 = res.data?.[0]?.b64_json
@@ -642,54 +643,6 @@ async function genImage(prompt, size = '1024x1024', transparent = true) {
   return Buffer.from(b64, 'base64')
 }
 
-/* ===================== RIGHT-FACING ENFORCER ===================== */
-/**
- * Heuristic check: looks at TR quadrant (emote), compares opaque pixel count
- * in left vs right third. If left third dominates significantly, we assume
- * the creature leans left; in that case we mirror the WHOLE sheet.
- * If inconclusive, we leave as-is.
- */
-async function enforceRightFacingOnSheet(sheetPath) {
-  try {
-    const img = await Jimp.read(sheetPath)
-    const W = img.bitmap.width
-    const H = img.bitmap.height
-
-    const colW = Math.floor((W - 2 * OUTER_MARGIN - SEPARATOR_GAP) / 2)
-    const rowH = Math.floor((H - 2 * OUTER_MARGIN - SEPARATOR_GAP) / 2)
-
-    const TR = {
-      x: OUTER_MARGIN + colW + SEPARATOR_GAP,
-      y: OUTER_MARGIN,
-      w: colW, h: rowH
-    }
-
-    const crop = img.clone().crop(TR.x, TR.y, TR.w, TR.h).autocrop({ tolerance: AUTOCROP_TOL, leaveBorder: 0 })
-    const w = crop.bitmap.width, h = crop.bitmap.height
-    if (w < 10 || h < 10) return // too small, skip
-
-    const third = Math.max(3, Math.floor(w / 3))
-    let leftCount = 0, rightCount = 0
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < third; x++) {
-        const a = crop.bitmap.data[(y*w + x)*4 + 3]
-        if (a > 10) leftCount++
-      }
-      for (let x = w - third; x < w; x++) {
-        const a = crop.bitmap.data[(y*w + x)*4 + 3]
-        if (a > 10) rightCount++
-      }
-    }
-    // If left side has 25% more opaque pixels than right, assume left-facing.
-    if (leftCount > rightCount * 1.25) {
-      const mirrored = img.clone().mirror(true, false)
-      await mirrored.writeAsync(sheetPath)
-      console.log('↔️  RIGHT-FACING ENFORCER: Sheet mirrored to force RIGHT orientation.')
-    }
-  } catch (e) {
-    console.warn('RIGHT-FACING ENFORCER skipped:', e?.message || e)
-  }
-}
 
 /* ===================== SHEET GEN ===================== */
 async function generateFourSpriteSheetImage(baseDir, identityPack, creatureTypes) {
@@ -702,9 +655,6 @@ async function generateFourSpriteSheetImage(baseDir, identityPack, creatureTypes
   const buf = await genImage(prompt, TARGET_SIZE, true)
   const SHEET_PATH = path.join(baseDir, 'four_sprites_sheet.png')
   await fsp.writeFile(SHEET_PATH, buf)
-
-  // Try to enforce right-facing after generation
-  await enforceRightFacingOnSheet(SHEET_PATH)
 
   return { SHEET_PATH, SOURCES_DIR }
 }
@@ -922,7 +872,7 @@ async function renderMoveBoardPanel({
   bgW, bgH,
   statIcons, typeIcons
 }) {
-  const panelW = Math.max(320, Math.round(bgW * 0.92))
+  const panelW = Math.max(320, bgW - PANEL_SIDE_MARGIN_PX * 2)
   const panelH = Math.round(bgH * 0.24)
   const panel = new Jimp(panelW, panelH, 0x00000000)
 
@@ -2264,18 +2214,19 @@ async function buildAndMuxAudio({
   const outL = new Float32Array(totalFrames)
   const outR = new Float32Array(totalFrames)
 
-  // music bed, looped
+  // music bed, looped (reduced by MUSIC_GAIN ≈ 50%)
   if (songRS.L.length > 0) {
     let idx = 0
     while (idx < totalFrames) {
       const chunk = Math.min(songRS.L.length, totalFrames - idx)
       for (let i = 0; i < chunk; i++) {
-        outL[idx + i] = clamp1(outL[idx + i] + songRS.L[i] * MASTER_GAIN)
-        outR[idx + i] = clamp1(outR[idx + i] + songRS.R[i] * MASTER_GAIN)
+        outL[idx + i] = clamp1(outL[idx + i] + songRS.L[i] * MASTER_GAIN * MUSIC_GAIN)
+        outR[idx + i] = clamp1(outR[idx + i] + songRS.R[i] * MASTER_GAIN * MUSIC_GAIN)
       }
       idx += chunk
     }
   }
+
 
   const norm = normalizeTimelineForEmotes(timeline, dur)
   const filteredCues = norm.cues
