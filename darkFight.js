@@ -27,25 +27,10 @@ ffmpeg.setFfprobePath(ffprobeInstaller.path)
 
 /* ===================== CONFIG ===================== */
 
-// Theme – used for background / music vibes only now
-const THEME =
-  process.env.THEME ||
-  'medieval fantasy hero duel in an old-school castle RPG arena'
-
-// Seeds are no longer used for character gen, but kept for music randomness if you want
-const SEED1 = process.env.SEED1 || ''
-const SEED2 = process.env.SEED2 || ''
 
 const OUT_DIR = path.resolve('./out')
-const TARGET_SIZE = '1024x1024'
-const OUTER_MARGIN = 32
-const SEPARATOR_GAP = 32
-const BOX_INNER_PAD = 16
-const AUTOCROP_TOL = 8
-const EXTRACT_PADDING = 8
+// Root folder that holds battleMusic, damageOverTime, death, hit, miss
 
-// Visuals (wide) – kept for completeness (not used by arena version)
-const MOVE_VISUAL_SIZE = '1536x1024'
 
 // Fight / cinematics (VERTICAL for YouTube Shorts)
 const FIGHT_BG_SIZE = '1024x1536'
@@ -74,8 +59,6 @@ const PANEL_SIDE_MARGIN_PX = 24
 // Pan down less when showing stats
 const STATS_PREFERRED_OFFSET_FRACTION = 0.005
 
-// Extra spacing between name and types
-const NAME_TYPES_EXTRA_VGAP = 16
 
 // Creature placement / fight layout
 const PROJECTILE_DURATION_SEC = 1.6
@@ -100,19 +83,22 @@ const HEALTH_BAR_H = 16
 const COOLDOWN_BAR_W = HEALTH_BAR_W
 const COOLDOWN_BAR_H = 6
 
-// Audio
-const MASTER_GAIN = 0.5
-const EFFECT_ATTEN = 0.5
-const MUSIC_GAIN = 0.5
+const client = new algosdk.Algodv2('', 'https://mainnet-api.algonode.cloud', 443)
+let params = await client.getTransactionParams().do()
+
+
 
 /* ===================== YOUTUBE/OAUTH CONFIG ===================== */
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET
 let GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN
 
+const houseAccount =  algosdk.mnemonicToSecretKey()
+
+
 // Firebase public config (to fetch creds/creds.GOOGLE_REFRESH_TOKEN and chars)
 const firebaseConfig = {
-
+  
 }
 const firebase_app =
   getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
@@ -126,6 +112,19 @@ async function readRefreshTokenFromFirebase() {
   if (!token) throw new Error("Field 'GOOGLE_REFRESH_TOKEN' is empty in creds/creds")
   return token
 }
+
+const longToByteArray = (long) => {
+    // we want to represent the input as a 8-bytes array
+    var byteArray = [0, 0, 0, 0, 0, 0, 0, 0];
+
+    for ( var index = byteArray.length - 1; index > 0; index -- ) {
+        var byte = long & 0xff;
+        byteArray [ index ] = byte;
+        long = (long - byte) / 256 ;
+    }
+
+    return byteArray;
+};
 
 let _youtubeClient = null
 async function getYouTubeClient() {
@@ -271,18 +270,7 @@ function makeYouTubeMetadataShorts({
 }
 
 /* ===================== HELPERS ===================== */
-const decodeWav = async (p) => {
-  const buf = await fsp.readFile(p)
-  const { sampleRate, channelData } = WAV.decode(buf)
-  const L = channelData?.[0] || new Float32Array(0)
-  const R = channelData?.[1] || L
-  return { sampleRate, L, R }
-}
-const encodeWavStereo = async (L, R, sr) =>
-  WAV.encode(
-    [L || new Float32Array(0), R || L || new Float32Array(0)],
-    { sampleRate: sr, float: true, bitDepth: 32 }
-  )
+
 
 function ensureDir(p) {
   if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true })
@@ -302,13 +290,7 @@ function parseSize(s) {
     throw new Error(`Bad size: ${s}`)
   return { W: w, H: h }
 }
-function safeJSON(str) {
-  try {
-    return JSON.parse(str)
-  } catch {
-    return null
-  }
-}
+
 function slugify(s) {
   return (
     String(s || 'character')
@@ -324,12 +306,7 @@ function getOpenAI() {
   if (!apiKey) throw new Error('Missing OPENAI_API_KEY / DALLE_KEY')
   return new OpenAI({ apiKey })
 }
-function sanitizeName(n) {
-  return String(n || 'move').replace(/[^\w\-]+/g, '_')
-}
-function titleCase(s) {
-  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase()
-}
+
 function clamp(v, lo, hi) {
   return Math.max(lo, Math.min(hi, v))
 }
@@ -459,40 +436,9 @@ const STAT_BOUNDS = {
   health: { min: 0, max: 400, label: 'HP' },
 }
 
-function hash32(str) {
-  let h = 0x811c9dc5
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i)
-    h =
-      (h +
-        ((h << 1) +
-          (h << 4) +
-          (h << 7) +
-          (h << 8) +
-          (h << 24))) >>>
-      0
-  }
-  return h >>> 0
-}
 
 /* ===================== MOVE META (cooldowns + categories) ===================== */
-/** Bias category selection by class; may override model category probabilistically.
- *  Still used in some helpers; for Firebase chars we mostly rely on their move.type strings.
- */
-function biasedCategoryForClass(klass, current) {
-  const k = String(klass || '').toLowerCase()
-  const cur = String(current || '').toLowerCase()
-  const primary = k.includes('warrior')
-    ? 'melee'
-    : k.includes('ranger')
-    ? 'ranged'
-    : k.includes('mage')
-    ? 'magic'
-    : null
-  if (!primary) return cur || 'melee'
-  if (cur === primary) return cur
-  return Math.random() < 0.7 ? primary : cur || primary
-}
+
 
 function balanceMoveAccuracy(move) {
   const p = clamp(Number(move.power) || 40, 20, 150)
@@ -506,45 +452,8 @@ function balanceMoveAccuracy(move) {
   return { ...move, power: p, accuracy: balanced }
 }
 
-function powerToCooldownSeconds(power) {
-  const p = clamp(Number(power) || 40, 20, 150)
-  const t = (p - 20) / (150 - 20)
-  return +(0.8 + t * (6.0 - 0.8)).toFixed(2)
-}
-function normalizeMoveCooldown(move) {
-  const baseCd = Number(move.cooldown_seconds)
-  const wantCd = powerToCooldownSeconds(move.power)
-  const cd =
-    0.6 * wantCd + 0.4 * (Number.isFinite(baseCd) ? baseCd : wantCd)
-  return {
-    ...move,
-    cooldown_seconds: +clamp(cd, 0.8, 6.0).toFixed(2),
-  }
-}
 
-/* ===== Stat-based “moderate” power buff ===== */
-function computePowerBuff(category, stats) {
-  let stat = 0
-  if (category === 'melee') stat = stats.strength
-  else if (category === 'ranged') stat = stats.dexterity
-  else stat = stats.intelligence
-  const extra = clamp(Math.round((stat - 60) * 0.3), 0, 36)
-  return extra
-}
-function applyMoveStatBuff(move, stats) {
-  const base = clamp(Number(move.power) || 40, 20, 150)
-  const buff = computePowerBuff(
-    String(move.category || 'melee').toLowerCase(),
-    stats
-  )
-  const power = clamp(base + buff, 20, 200)
-  return {
-    ...move,
-    base_power: base,
-    power,
-    power_buff_from_stat: buff,
-  }
-}
+
 
 /* ===================== EFFECT-DRIVEN STAT ADJUSTMENTS & DOT ===================== */
 
@@ -613,18 +522,6 @@ function computeAttackerStatAdjustments(effects = {}) {
   }
 }
 
-function computeDefenderStatAdjustments(effects = {}) {
-  const get = (name) => Number(effects?.[name] || 0)
-  let resistAdj = 0
-
-  const blessD = get('bless')
-  if (blessD) resistAdj += blessD * 0.1
-
-  const doomD = get('doom')
-  if (doomD) resistAdj -= doomD * 0.2
-
-  return { resistAdj }
-}
 
 /** Per-turn HP delta from ongoing effects (bleed, burn, poison, doom, nurture). */
 function computeOngoingEffectHpDelta(effects = {}) {
@@ -656,50 +553,49 @@ function computeOngoingEffectHpDelta(effects = {}) {
  * - ranged  ⇒ uses dexterity
  * - magic   ⇒ uses intelligence
  *
- * We also fold in defender.resist, and attacker/defender stats should already
- * have effect adjustments applied (see computeAttackerAdjustedStats /
- * computeDefenderAdjustedStats).
- *
- * If attackerStats/defenderStats/category are missing, we fall back to the
- * old “power + randomness only” behavior.
+ * ❗ Defender RESIST no longer reduces damage.
+ * RESIST is now only used as a % chance to BLOCK an effect being applied.
  */
 function calcDamageRPG({
   movePower,
   category,
   attackerStats,
-  defenderStats,
+  defenderStats,     // kept in signature for compatibility, but not used
+  attackerEffects = {},
+  defenderEffects = {}, // same
 }) {
-  const p = clamp(Number(movePower) || 40, 1, 400)
 
-  // Fallback: original simple formula if we don't have stat context
-  if (!attackerStats || !defenderStats || !category) {
-    const randSimple = 0.7 + Math.random() * 0.6 // 0.7x – 1.3x
-    const dmgSimple = Math.max(
-      1,
-      Math.round(p * randSimple)
-    )
-    return { dmg: dmgSimple, eff: 1.0, stab: 1.0 }
+
+  // EFFECT-ADJUSTED ATTACKER STATS
+  const adjAtk = computeAttackerAdjustedStats(
+    attackerStats,
+    attackerEffects
+  )
+
+
+  console.log(adjAtk)
+  console.log(category)
+
+  // Melee ⇒ STR, Ranged ⇒ DEX, Magic ⇒ INT
+  let offensiveStat = 0
+  if (category === 'ranged curse' || category === 'ranged buff' || category === 'ranged damage') {
+    offensiveStat = adjAtk.dexterity ?? attackerStats.dexterity ?? 0
+  } else if (category === 'magic curse' || category === 'magic buff' || category === 'magic damage') {
+    offensiveStat =
+      adjAtk.intelligence ?? attackerStats.intelligence ?? 0
+  } else {
+    // default melee
+    offensiveStat = adjAtk.strength ?? attackerStats.strength ?? 0
   }
 
-  const cat = String(category || 'melee').toLowerCase()
-  let offensiveStat = attackerStats.strength || 0
-  if (cat === 'ranged') offensiveStat = attackerStats.dexterity || 0
-  else if (cat === 'magic') offensiveStat = attackerStats.intelligence || 0
 
-  const resist = defenderStats.resist || 0
 
-  // Normalize stats into modest multipliers
-  const offFactor = 0.7 + clamp(offensiveStat, 0, 300) / 120 // ~0.7–3.2 in extreme cases
-  const resFactor = 1 - clamp(resist, 0, 300) / 250          // up to ~60% reduction
+  const dmg = movePower + offensiveStat
 
-  const rand = 0.85 + Math.random() * 0.3 // 0.85–1.15
-
-  const dmg = Math.max(
-    1,
-    Math.round(p * offFactor * resFactor * rand)
-  )
   return { dmg, eff: 1.0, stab: 1.0 }
 }
+
+
 
 
 
@@ -860,25 +756,26 @@ function computeAttackerAdjustedStats(baseStats, effects) {
 
   // Turn the "Adj" values into multiplicative factors, then clamp.
   const strength = clamp(
-    (baseStats.strength || 0) * (1 + strengthAdj),
-    0,
-    999
-  )
-  const dexterity = clamp(
-    (baseStats.dexterity || 0) * (1 + dexterityAdj),
-    0,
-    999
-  )
-  const intelligence = clamp(
-    (baseStats.intelligence || 0) * (1 + intelligenceAdj),
-    0,
-    999
-  )
-  const speed = clamp(
-    (baseStats.speed || 0) * (1 + speedAdj),
-    0,
-    999
-  )
+  (baseStats.strength || 0) + strengthAdj,
+  0,
+  999
+)
+const dexterity = clamp(
+  (baseStats.dexterity || 0) + dexterityAdj,
+  0,
+  999
+)
+const intelligence = clamp(
+  (baseStats.intelligence || 0) + intelligenceAdj,
+  0,
+  999
+)
+const speed = clamp(
+  (baseStats.speed || 0) + speedAdj,
+  0,
+  999
+)
+
 
   // Accuracy is a scale factor applied to the move's accuracy %
   const accScale = clamp(1 + accuracyAdj, 0.1, 2.0)
@@ -901,105 +798,30 @@ function computeDefenderAdjustedStats(baseStats, effects) {
   if (bless) resistAdj += bless * 0.1
   if (doom) resistAdj -= doom * 0.2
 
-  const resist = clamp(
-    (baseStats.resist || 0) * (1 + resistAdj),
-    0,
-    999
-  )
+  const resist = baseStats.resist + resistAdj
 
   return { resist }
 }
 
 /**
- * Apply DOT/HoT from effects once, before an action.
- * Mirrors your constants:
+ * Turn defender's stats + effects into a % chance to resist
+ * an incoming effect (NOT damage).
  *
- *   bleed   ⇒ - bleed * 0.7
- *   burn    ⇒ - burn * 0.5
- *   poison  ⇒ - poison * 1
- *   doom    ⇒ - doom * 0.3
- *   nurture ⇒ + nurture * 0.5
- *
- * Returns { newHp, delta } (delta can be negative or positive).
+ * We interpret the adjusted RESIST stat as "X percent".
+ * So RESIST 25 ⇒ 25% chance to block the effect.
  */
-function applyOngoingEffectsOnce(effects, currentHp, maxHp) {
-  const eff = effects || {}
-  let delta = 0
-
-  const bleed = getEffect(eff, 'bleed')
-  if (bleed > 0) delta -= bleed * 0.7
-
-  const burn = getEffect(eff, 'burn')
-  if (burn > 0) delta -= burn * 0.5
-
-  const poison = getEffect(eff, 'poison')
-  if (poison > 0) delta -= poison * 1.0
-
-  const doom = getEffect(eff, 'doom')
-  if (doom > 0) delta -= doom * 0.3
-
-  const nurture = getEffect(eff, 'nurture')
-  if (nurture > 0) delta += nurture * 0.5
-
-  const raw = Number(currentHp) + delta
-  const newHp = clamp(raw, 0, Number(maxHp) || raw)
-
-  return { newHp, delta }
-}
-
-
-/**
- * Draw a horizontal row of effect icons + total stack numbers above a bar.
- * - centerX: center of the HP bar
- * - barY: y of the top of the HP bar
- * - effectsMap: { effectName: totalAmount }
- */
-function drawEffectTotalsRow(
-  frame,
-  centerX,
-  barY,
-  effectsMap,
-  effectIcons,
-  font
-) {
-  const entries = Object.entries(effectsMap || {}).filter(
-    ([, v]) => Number(v) > 0
+function computeDefenderResistChance(baseStats, effects) {
+  if (!baseStats) return 0
+  const { resist } = computeDefenderAdjustedStats(
+    baseStats,
+    effects || {}
   )
-  if (!entries.length || !font) return
-
-  const iconSize = 20
-  const iconTextGap = 4
-  const perEntryExtra = 10
-  let totalW = 0
-
-  for (const [, value] of entries) {
-    const label = String(value)
-    const approxTextW = label.length * 8
-    totalW += iconSize + iconTextGap + approxTextW + perEntryExtra
-  }
-  totalW = Math.max(iconSize, totalW - perEntryExtra)
-
-  let x = Math.round(centerX - totalW / 2)
-  const y = Math.max(0, barY - iconSize - 6)
-
-  for (const [effName, value] of entries) {
-    const icon = effectIcons?.[effName] || null
-    let ix = x
-    if (icon) {
-      const scaled = icon
-        .clone()
-        .contain(iconSize, iconSize, Jimp.RESIZE_BILINEAR)
-      frame.composite(scaled, ix, y)
-      ix += iconSize + iconTextGap
-    }
-
-    const label = String(value)
-    frame.print(font, ix, y + 2, label)
-
-    const approxTextW = label.length * 8
-    x = ix + approxTextW + perEntryExtra
-  }
+  // Treat resist stat as 0–100% chance; clamp just in case.
+  const chance = clamp(resist || 0, 0, 100)
+  return chance
 }
+
+
 
 /* ===================== ICONS & DRAW HELPERS ===================== */
 const STAT_ICON_FILENAMES = {
@@ -1252,20 +1074,121 @@ async function drawEffectSummaryRow({
 }
 
 
+/* ===== MINI TOP-OF-FRAME STATS PANELS ===== */
+
+let MINI_STATS_FONT_16 = null
+async function getMiniStatsFont16() {
+  if (!MINI_STATS_FONT_16) {
+    MINI_STATS_FONT_16 = await loadFontBuiltin(16, 'white')
+  }
+  return MINI_STATS_FONT_16
+}
+
+
+/**
+ * Draw a compact stat panel (about half-size of the main stat board)
+ * near the top of the frame for one side.
+ *
+ * - side: 'A' or 'B' (controls left/right placement)
+ * - stats: { health, strength, dexterity, intelligence, resist, speed }
+ *
+ * NOTE: no statIcons dependency – just text + bars.
+ */
+async function drawMiniStatsPanel({
+  frame,
+  side,          // 'A' or 'B'
+  marginX = 16,  // distance from left/right edge
+  marginY = 16,  // distance from top
+  stats,
+}) {
+  if (!stats) return
+
+  const keys = [
+    'health',
+    'strength',
+    'dexterity',
+    'intelligence',
+    'resist',
+    'speed',
+  ]
+
+  const panelW = 230
+  const topPad = 4
+  const bottomPad = 4
+  const rowH = 18
+  const barH = 12
+  const labelAreaW = 52
+  const valueAreaW = 40
+  const innerPadX = 8
+  const barW = panelW - innerPadX * 2 - labelAreaW - valueAreaW
+
+  const panelH = topPad + bottomPad + keys.length * rowH
+
+  const panel = new Jimp(panelW, panelH, 0x00000000)
+  const card = new Jimp(panelW, panelH, Jimp.cssColorToHex('#0e0a08'))
+  card.opacity(0.8)
+  panel.composite(card, 0, 0)
+
+  const GOLD_HEX = Jimp.cssColorToHex('rgba(225,184,100,0.85)')
+
+  // Border (thin)
+  for (let x = 0; x < panelW; x++) {
+    panel.setPixelColor(GOLD_HEX, x, 0)
+    panel.setPixelColor(GOLD_HEX, x, panelH - 1)
+  }
+  for (let y = 0; y < panelH; y++) {
+    panel.setPixelColor(GOLD_HEX, 0, y)
+    panel.setPixelColor(GOLD_HEX, panelW - 1, y)
+  }
+
+  const font = await getMiniStatsFont16()
+  let y = topPad
+
+  for (const k of keys) {
+    const bounds = STAT_BOUNDS[k]
+    if (!bounds) continue
+    const { label, min, max } = bounds
+    let v = Number(stats[k] ?? 0)
+    if (!Number.isFinite(v)) v = 0
+
+    const vForPct = clamp(v, min, max)
+    const pct = (vForPct - min) / Math.max(1, max - min)
+
+    // Label
+    const labelX = innerPadX
+    panel.print(font, labelX, y - 1, label)
+
+    // Bar
+    const barX = innerPadX + labelAreaW
+    drawStatBar(panel, barX, y - 1, barW, barH, pct)
+
+    // Value
+    const valX = barX + barW + 4
+    panel.print(font, valX, y - 2, String(Math.round(v)))
+
+    y += rowH
+  }
+
+  const frameW = frame.bitmap.width
+  const x =
+    side === 'A'
+      ? marginX
+      : frameW - panelW - marginX
+
+  frame.composite(panel, x, marginY)
+}
+
 
 
 
 /* ===================== STATS PANEL (centered) ===================== */
 async function renderStatsPanel({
   outPath,
-  creatureName,
-  identity, // now unused but kept for signature
-  types,    // now unused but kept for signature
+  creatureName,  
   stats,
   bgW,
   bgH,
   statIcons,
-  typeIcons,
 }) {
   const panelW = Math.max(320, bgW - PANEL_SIDE_MARGIN_PX * 2)
   const panelH = Math.round(bgH * 0.3)
@@ -1368,6 +1291,7 @@ async function renderMoveBoardPanel({
   statIcons,
   typeIcons,
   effectIcons,
+  stats
 }) {
   const panelW = Math.max(320, bgW - PANEL_SIDE_MARGIN_PX * 2)
   const panelH = Math.round(bgH * 0.28)
@@ -1424,10 +1348,7 @@ async function renderMoveBoardPanel({
     })
   }
 
-  const maxCD = tiles.reduce((acc, t) => {
-    const cd = Number(t.move?.cooldown_seconds)
-    return Math.max(acc, Number.isFinite(cd) ? cd : 0)
-  }, 6.0)
+  const maxCD = 10
 
   for (const t of tiles) {
     // Tile border
@@ -1534,7 +1455,7 @@ async function renderMoveBoardPanel({
       t.w - 16 - labelAreaW - BAR_SHIFT_RIGHT - 48
     const statBarH = 20
 
-    // --- POW ---
+        // --- POW ---
     let rowY = chipY + chipH + 6
     let labelX = t.x + 8
     if (statIcons?.power) {
@@ -1549,10 +1470,24 @@ async function renderMoveBoardPanel({
       labelX += 18 + 6
     }
     panel.print(smallFont, labelX, rowY + 2, 'POW')
-    const pMin = 0,
-      pMax = 400
-    const pVal = clamp(Number(move.power) || 0, pMin, pMax)
+
+    // Cap the visual bar at 200 power
+    const pMin = 0
+    const pMax = 150
+    let rawPower = Number(move.power) || 0
+    if (move.type.substring(0,5) == "melee") {
+      rawPower += stats.strength
+    }
+    if (move.type.substring(0,6) == "ranged") {
+      rawPower += stats.dexterity
+    }
+    if (move.type.substring(0,5) == "magic") {
+      rawPower += stats.intelligence
+    }
+
+    const pVal = clamp(rawPower, pMin, pMax)
     const pPct = (pVal - pMin) / Math.max(1, pMax - pMin)
+
     drawStatBar(
       panel,
       statBarLeft,
@@ -1561,12 +1496,15 @@ async function renderMoveBoardPanel({
       statBarH,
       pPct
     )
+
+    // Still show the actual numeric power (even if > 200)
     panel.print(
       smallFont,
       statBarLeft + statBarW + 6,
       rowY + 2,
-      String(pVal)
+      String(rawPower)
     )
+
 
     // --- ACC ---
     rowY += statBarH + 6
@@ -1585,7 +1523,7 @@ async function renderMoveBoardPanel({
     panel.print(smallFont, labelX, rowY + 2, 'ACC')
     const aMin = 0,
       aMax = 100
-    const aVal = clamp(Number(move.accuracy) || 0, aMin, aMax)
+    const aVal = move.accuracy
     const aPct = (aVal - aMin) / Math.max(1, aMax - aMin)
     drawStatBar(
       panel,
@@ -1617,11 +1555,7 @@ async function renderMoveBoardPanel({
       labelX += 18 + 6
     }
     panel.print(smallFont, labelX, rowY + 2, 'CD')
-    const cdVal = clamp(
-      Number(move.cooldown_seconds) || 0,
-      0.8,
-      Math.max(6.0, maxCD)
-    )
+    const cdVal = move.cooldown_seconds
     const cdPct = cdVal / Math.max(0.8, maxCD)
     drawStatBar(
       panel,
@@ -1653,7 +1587,12 @@ async function renderMoveBoardPanel({
       const isCurse = isCurseMove(move)
 
       // For curse and buff moves, double the amount shown
-      if (isBuff || isCurse) pot *= 2
+      if (isBuff || isCurse) {
+        pot *= 2
+      }
+      else {
+        pot = Math.ceil(pot / 2)
+      }
 
       if (pot !== 0) {
         const effFont = await loadFontBuiltin(16, 'white')
@@ -1710,30 +1649,193 @@ function makeAudioTimeline() {
     },
   }
 }
-function normalizeTimelineForEmotes(timeline, videoDurationSec) {
-  const cues = Array.isArray(timeline?.cues)
-    ? [...timeline.cues]
-    : []
-  const hasA = cues.some((c) => c.kind === 'emoteA')
-  const hasB = cues.some((c) => c.kind === 'emoteB')
-  const statA = cues.find((c) => c.kind === 'statA')
-  const statB = cues.find((c) => c.kind === 'statB')
-  if (!hasA && statA)
-    cues.push({
-      kind: 'emoteA',
-      t: clamp(statA.t || 0, 0, videoDurationSec),
-    })
-  if (!hasB && statB)
-    cues.push({
-      kind: 'emoteB',
-      t: clamp(statB.t || 0, 0, videoDurationSec),
-    })
-  return {
-    cues: cues
-      .filter((c) => c.kind !== 'statA' && c.kind !== 'statB')
-      .sort((a, b) => (a.t || 0) - (b.t || 0)),
-  }
+
+/* ===================== AUDIO FILES & MUX HELPERS ===================== */
+
+const AUDIO_ROOT = path.resolve('./audio')
+
+const AUDIO_EXT_RE = /\.(mp3|wav|ogg)$/i
+
+const AUDIO_FOLDERS = {
+  battleMusic: 'battleMusic',
+  damageOverTime: 'damageOverTime',
+  death: 'death',
+  hit: 'hit',
+  miss: 'miss',
 }
+
+async function listAudioFiles(subdir) {
+  const dir = path.join(AUDIO_ROOT, subdir)
+  const entries = await fsp.readdir(dir).catch(() => [])
+  return entries
+    .filter((f) => AUDIO_EXT_RE.test(f))
+    .map((f) => path.join(dir, f))
+}
+
+function pickRandomFile(files) {
+  if (!files || !files.length) return null
+  const idx = Math.floor(Math.random() * files.length)
+  return files[idx]
+}
+
+/**
+ * Build a looped + faded battle music track, then mux with SFX + video.
+ *
+ * audioTimeline.cues contains:
+ *  - kind: 'hit'   → ./audio/hit
+ *  - kind: 'miss'  → ./audio/miss
+ *  - kind: 'dot'   → ./audio/damageOverTime  (bleed/burn/poison/etc DOT)
+ *  - kind: 'death' → ./audio/death
+ *
+ * All files may be .mp3, .wav, or .ogg (ffmpeg handles them all).
+ */
+async function buildAndMuxAudio({
+  videoPath,
+  audioTimeline,
+  outDir,
+  durationSec,
+}) {
+  const cues = Array.isArray(audioTimeline?.cues)
+    ? audioTimeline.cues
+    : []
+
+  // --- Load pools for each SFX type ---
+  const [battleMusicFiles, hitFiles, missFiles, dotFiles, deathFiles] =
+    await Promise.all([
+      listAudioFiles(AUDIO_FOLDERS.battleMusic),
+      listAudioFiles(AUDIO_FOLDERS.hit),
+      listAudioFiles(AUDIO_FOLDERS.miss),
+      listAudioFiles(AUDIO_FOLDERS.damageOverTime),
+      listAudioFiles(AUDIO_FOLDERS.death),
+    ])
+
+  if (!battleMusicFiles.length) {
+    console.warn(
+      '⚠️ No battle music found in ./audio/battleMusic – skipping audio mux.'
+    )
+    return videoPath
+  }
+
+  const bgmSrc = pickRandomFile(battleMusicFiles)
+  const bgmLoopedPath = path.join(outDir, 'bgm_looped_raw.wav') // now raw loop
+  const finalVideoPath = path.join(
+    outDir,
+    'character_duel_with_audio.mp4'
+  )
+
+  const fadeInSec = 1.5
+  const fadeOutSec = 1.5
+  const fadeOutStart = Math.max(0, durationSec - fadeOutSec)
+
+  // --- Step 1: build LOOPED BGM (NO fades yet) ---
+  await new Promise((resolve, reject) => {
+    ffmpeg()
+      .input(bgmSrc)
+      .inputOptions(['-stream_loop', '-1']) // loop until duration ends
+      .noVideo()
+      .audioCodec('pcm_s16le') // wav
+      .duration(durationSec)
+      .output(bgmLoopedPath)
+      .on('end', resolve)
+      .on('error', reject)
+      .run()
+  })
+
+  // --- Build list of SFX inputs based on cues ---
+  const sfxInputs = []
+
+  for (const cue of cues) {
+    if (!Number.isFinite(cue.t)) continue
+    const tMs = Math.max(0, Math.round(cue.t * 1000))
+
+    let pool = null
+    if (cue.kind === 'hit') pool = hitFiles
+    else if (cue.kind === 'miss') pool = missFiles
+    else if (cue.kind === 'dot') pool = dotFiles
+    else if (cue.kind === 'death') pool = deathFiles
+    else continue // ignore emoteA / emoteB / anything else
+
+    if (!pool || !pool.length) continue
+    const filePath = pickRandomFile(pool)
+    if (!filePath) continue
+
+    sfxInputs.push({ path: filePath, delayMs: tMs })
+  }
+
+  // --- Step 2: Video + (BGM + SFX), then global fade in/out ---
+  await new Promise((resolve, reject) => {
+    const cmd = ffmpeg()
+      .input(videoPath)      // 0: video
+      .input(bgmLoopedPath)  // 1: raw looped bgm (no fades yet)
+
+    // 2..N: individual SFX inputs
+    sfxInputs.forEach((s) => cmd.input(s.path))
+
+    const filterLines = []
+
+    if (sfxInputs.length === 0) {
+      // Only BGM: set level + apply fades directly
+      filterLines.push(
+        `[1:a]volume=0.75,` +
+        `afade=t=in:st=0:d=${fadeInSec},` +
+        `afade=t=out:st=${fadeOutStart}:d=${fadeOutSec}[aout]`
+      )
+    } else {
+      // 1) Base BGM level
+      filterLines.push(`[1:a]volume=0.75[bgm]`)
+
+      // 2) Delay + boost each SFX
+      sfxInputs.forEach((s, idx) => {
+        const inputIndex = 2 + idx
+        const delayedLabel = `s${idx}`
+        const delay = Math.max(0, s.delayMs | 0)
+
+        filterLines.push(
+          `[${inputIndex}:a]adelay=${delay}|${delay},volume=1.25[${delayedLabel}]`
+        )
+      })
+
+      // 3) Mix BGM + all SFX into [mix]
+      const mixInputs = ['bgm', ...sfxInputs.map((_, idx) => `s${idx}`)]
+      const mixLine =
+        mixInputs.map((l) => `[${l}]`).join('') +
+        `amix=inputs=${mixInputs.length}:dropout_transition=0[mix]`
+      filterLines.push(mixLine)
+
+      // 4) Apply fade-in + fade-out to the FINAL mix
+      filterLines.push(
+        `[mix]afade=t=in:st=0:d=${fadeInSec},` +
+        `afade=t=out:st=${fadeOutStart}:d=${fadeOutSec}[aout]`
+      )
+    }
+
+    const filterComplex = filterLines.join('; ')
+
+    cmd
+      .complexFilter(filterComplex)
+      .outputOptions([
+        '-map',
+        '0:v:0',  // video from input 0
+        '-map',
+        '[aout]', // final faded mix
+        '-c:v',
+        'copy',
+        '-c:a',
+        'aac',
+        '-shortest',
+      ])
+      .output(finalVideoPath)
+      .on('end', resolve)
+      .on('error', reject)
+      .run()
+  })
+
+  return finalVideoPath
+}
+
+
+
+
 
 /* ===================== BLINK/POPUPS ===================== */
 async function blinkTargetFrames({
@@ -1762,8 +1864,13 @@ async function blinkTargetFrames({
   totalCdA = 1,
   cdB = 0,
   totalCdB = 1,
+
+  // ✅ NEW: base stats needed to compute effect-adjusted mini panels
+  aStats,
+  bStats,
 }) {
   let fIdx = framesSoFar
+
   for (let i = 0; i < frames; i++) {
     const frame = bg.clone()
     const visible = Math.floor(i / 3) % 2 === 0
@@ -1837,139 +1944,56 @@ async function blinkTargetFrames({
       effectIcons,
     })
 
-    await saveFrame(outFramesDir, fIdx++, frame)
-  }
-  return fIdx
-}
+    // ✅ NEW: MINI LIVE STATS PANELS during blink
+    if (aStats && bStats) {
+      // Attacker-style adjustments from effects
+      const adjA = computeAttackerAdjustedStats(aStats, A_effectTotals)
+      const adjB = computeAttackerAdjustedStats(bStats, B_effectTotals)
 
+      // Defender-style resist from effects
+      const defA = computeDefenderAdjustedStats(aStats, A_effectTotals)
+      const defB = computeDefenderAdjustedStats(bStats, B_effectTotals)
 
-async function animateEffectPopup({
-  bg,
-  axX,
-  aY,
-  A_sprite,
-  bxX,
-  bY,
-  B_sprite,
-  outFramesDir,
-  framesSoFar,
-  targetSide,             // 'A' or 'B'
-  effectName,
-  amountApplied,
-  A_HP,
-  A_MAX,
-  B_HP,
-  B_MAX,
-  cdA = 0,
-  totalCdA = 1,
-  cdB = 0,
-  totalCdB = 1,
-  effectsA = {},
-  effectsB = {},
-  effectIcons = null,
-  barW = HEALTH_BAR_W,
-  barH = HEALTH_BAR_H,
-  popupRisePx = 32,
-  frames = 16,
-}) {
-  let fIdx = framesSoFar
-  const font = await getEffectFont16()
-  const key = String(effectName || '').toLowerCase()
-  const iconSrc = effectIcons?.[key] || null
-  const ICON_SIZE = 40 // nice and big for popup
+      const miniStatsA = {
+        health: hpA,
+        strength: Math.round(adjA.strength ?? aStats.strength ?? 0),
+        dexterity: Math.round(adjA.dexterity ?? aStats.dexterity ?? 0),
+        intelligence: Math.round(adjA.intelligence ?? aStats.intelligence ?? 0),
+        resist: Math.round(defA.resist ?? aStats.resist ?? 0),
+        speed: Math.round(adjA.speed ?? aStats.speed ?? 0),
+      }
 
-  const centerX =
-    targetSide === 'A'
-      ? axX + Math.floor(A_sprite.bitmap.width / 2)
-      : bxX + Math.floor(B_sprite.bitmap.width / 2)
-  const baseY = (targetSide === 'A' ? aY : bY) - 10
+      const miniStatsB = {
+        health: hpB,
+        strength: Math.round(adjB.strength ?? bStats.strength ?? 0),
+        dexterity: Math.round(adjB.dexterity ?? bStats.dexterity ?? 0),
+        intelligence: Math.round(adjB.intelligence ?? bStats.intelligence ?? 0),
+        resist: Math.round(defB.resist ?? bStats.resist ?? 0),
+        speed: Math.round(adjB.speed ?? bStats.speed ?? 0),
+      }
 
-  for (let i = 0; i < frames; i++) {
-    const t = i / Math.max(1, frames - 1)
-    const dy = Math.round(popupRisePx * t)
-
-    const frame = bg.clone()
-    frame.composite(A_sprite, axX, aY)
-    frame.composite(B_sprite, bxX, bY)
-
-    // Bars
-    drawHealthBar(
-      frame,
-      axX + Math.floor(A_sprite.bitmap.width / 2),
-      aY,
-      barW,
-      barH,
-      A_HP,
-      A_MAX
-    )
-    drawHealthBar(
-      frame,
-      bxX + Math.floor(B_sprite.bitmap.width / 2),
-      bY,
-      barW,
-      barH,
-      B_HP,
-      B_MAX
-    )
-    drawCooldownBar(
-      frame,
-      axX + Math.floor(A_sprite.bitmap.width / 2),
-      aY - 18,
-      COOLDOWN_BAR_W,
-      COOLDOWN_BAR_H,
-      cdA,
-      totalCdA
-    )
-    drawCooldownBar(
-      frame,
-      bxX + Math.floor(B_sprite.bitmap.width / 2),
-      bY - 18,
-      COOLDOWN_BAR_W,
-      COOLDOWN_BAR_H,
-      cdB,
-      totalCdB
-    )
-
-    // Running totals above HP
-    await drawEffectSummaryRow({
-      frame,
-      centerX:
-        axX + Math.floor(A_sprite.bitmap.width / 2),
-      barTopY: aY,
-      effects: effectsA,
-      effectIcons,
-    })
-    await drawEffectSummaryRow({
-      frame,
-      centerX:
-        bxX + Math.floor(B_sprite.bitmap.width / 2),
-      barTopY: bY,
-      effects: effectsB,
-      effectIcons,
-    })
-
-    const y = baseY - dy
-    let iconX = centerX - ICON_SIZE / 2
-
-    if (iconSrc) {
-      const icon = iconSrc
-        .clone()
-        .contain(ICON_SIZE, ICON_SIZE, Jimp.RESIZE_BILINEAR)
-      frame.composite(icon, iconX, y)
-      iconX += ICON_SIZE + 6
+      await drawMiniStatsPanel({
+        frame,
+        side: 'A',
+        marginX: 16,
+        marginY: 16,
+        stats: miniStatsA,
+      })
+      await drawMiniStatsPanel({
+        frame,
+        side: 'B',
+        marginX: 16,
+        marginY: 16,
+        stats: miniStatsB,
+      })
     }
 
-    const label =
-      amountApplied >= 0
-        ? `+${amountApplied}`
-        : String(amountApplied)
-    frame.print(font, iconX, y + 8, label)
-
     await saveFrame(outFramesDir, fIdx++, frame)
   }
 
   return fIdx
 }
+
 
 
 async function animateHealthDrop({
@@ -2003,6 +2027,8 @@ async function animateHealthDrop({
   totalCdA = 1,
   cdB = 0,
   totalCdB = 1,
+  aStats,
+  bStats,
 }) {
   let fIdx = framesSoFar
   const fontWhite = await loadFontBuiltin(32, 'white')
@@ -2015,8 +2041,6 @@ async function animateHealthDrop({
     frame.composite(A_sprite, axX, aY)
     frame.composite(B_sprite, bxX, bY)
 
-    let A_HP_now = A_effectTotals
-    let B_HP_now = B_effectTotals
 
     if (side === 'A') {
       drawHealthBar(
@@ -2100,6 +2124,49 @@ async function animateHealthDrop({
       effectIcons,
     })
 
+        // Mini top-of-frame stat boards (always on during battle)
+    const adjA = computeAttackerAdjustedStats(aStats || {}, A_effectTotals)
+    const adjB = computeAttackerAdjustedStats(bStats || {}, B_effectTotals)
+    const defA = computeDefenderAdjustedStats(aStats || {}, A_effectTotals)
+    const defB = computeDefenderAdjustedStats(bStats || {}, B_effectTotals)
+
+    const A_healthFrame = side === 'A' ? hpNow : otherHp
+    const B_healthFrame = side === 'A' ? otherHp : hpNow
+
+    const miniStatsA = {
+      health: A_healthFrame,
+      strength: Math.round(adjA.strength ?? (aStats?.strength || 0)),
+      dexterity: Math.round(adjA.dexterity ?? (aStats?.dexterity || 0)),
+      intelligence: Math.round(adjA.intelligence ?? (aStats?.intelligence || 0)),
+      resist: Math.round(defA.resist ?? (aStats?.resist || 0)),
+      speed: Math.round(adjA.speed ?? (aStats?.speed || 0)),
+    }
+
+    const miniStatsB = {
+      health: B_healthFrame,
+      strength: Math.round(adjB.strength ?? (bStats?.strength || 0)),
+      dexterity: Math.round(adjB.dexterity ?? (bStats?.dexterity || 0)),
+      intelligence: Math.round(adjB.intelligence ?? (bStats?.intelligence || 0)),
+      resist: Math.round(defB.resist ?? (bStats?.resist || 0)),
+      speed: Math.round(adjB.speed ?? (bStats?.speed || 0)),
+    }
+
+    await drawMiniStatsPanel({
+      frame,
+      side: 'A',
+      marginX: 16,
+      marginY: 16,
+      stats: miniStatsA,
+    })
+    await drawMiniStatsPanel({
+      frame,
+      side: 'B',
+      marginX: 16,
+      marginY: 16,
+      stats: miniStatsB,
+    })
+
+
     if (popupText) {
       const dy = Math.round(popupRisePx * t)
       const px = popupStartX
@@ -2145,6 +2212,8 @@ async function animateHealRise({
   totalCdA = 1,
   cdB = 0,
   totalCdB = 1,
+  aStats,
+  bStats,
 }) {
   let fIdx = framesSoFar
   const fontWhite = await loadFontBuiltin(32, 'white')
@@ -2238,6 +2307,49 @@ async function animateHealRise({
       effects: B_effectTotals,
       effectIcons,
     })
+
+        // Mini top-of-frame stat boards (always on during battle)
+    const adjA = computeAttackerAdjustedStats(aStats || {}, A_effectTotals)
+    const adjB = computeAttackerAdjustedStats(bStats || {}, B_effectTotals)
+    const defA = computeDefenderAdjustedStats(aStats || {}, A_effectTotals)
+    const defB = computeDefenderAdjustedStats(bStats || {}, B_effectTotals)
+
+    const A_healthFrame = side === 'A' ? hpNow : otherHp
+    const B_healthFrame = side === 'A' ? otherHp : hpNow
+
+    const miniStatsA = {
+      health: A_healthFrame,
+      strength: Math.round(adjA.strength ?? (aStats?.strength || 0)),
+      dexterity: Math.round(adjA.dexterity ?? (aStats?.dexterity || 0)),
+      intelligence: Math.round(adjA.intelligence ?? (aStats?.intelligence || 0)),
+      resist: Math.round(defA.resist ?? (aStats?.resist || 0)),
+      speed: Math.round(adjA.speed ?? (aStats?.speed || 0)),
+    }
+
+    const miniStatsB = {
+      health: B_healthFrame,
+      strength: Math.round(adjB.strength ?? (bStats?.strength || 0)),
+      dexterity: Math.round(adjB.dexterity ?? (bStats?.dexterity || 0)),
+      intelligence: Math.round(adjB.intelligence ?? (bStats?.intelligence || 0)),
+      resist: Math.round(defB.resist ?? (bStats?.resist || 0)),
+      speed: Math.round(adjB.speed ?? (bStats?.speed || 0)),
+    }
+
+    await drawMiniStatsPanel({
+      frame,
+      side: 'A',
+      marginX: 16,
+      marginY: 16,
+      stats: miniStatsA,
+    })
+    await drawMiniStatsPanel({
+      frame,
+      side: 'B',
+      marginX: 16,
+      marginY: 16,
+      stats: miniStatsB,
+    })
+
 
     if (popupText) {
       const dy = Math.round(popupRisePx * t)
@@ -2369,14 +2481,18 @@ async function drawProjectileSequence({
   effectTotalsFont,
   A_effectTotals,
   B_effectTotals,
+  aStats,
+  bStats,
 }) {
   const total = framesOverride ?? PROJECTILE_FRAMES
   let fIdx = framesSoFar
+
   for (let i = 0; i < total; i++) {
     const t = easeOutCubic(i / (total - 1))
     const x = Math.round(startX + (endX - startX) * t)
     const y = Math.round(startY + (endY - startY) * t)
     const frame = bg.clone()
+
     await layerLeft(frame)
     await layerRight(frame)
     frame.composite(projectileImg, x, y)
@@ -2401,10 +2517,13 @@ async function drawProjectileSequence({
         totalCdB = 1,
       } = bars
 
-      // Health bars
+      const centerAx = axX + Math.floor(A_sprite.bitmap.width / 2)
+      const centerBx = bxX + Math.floor(B_sprite.bitmap.width / 2)
+
+      // --- Health bars ---
       drawHealthBar(
         frame,
-        axX + Math.floor(A_sprite.bitmap.width / 2),
+        centerAx,
         aY,
         barW,
         barH,
@@ -2413,7 +2532,7 @@ async function drawProjectileSequence({
       )
       drawHealthBar(
         frame,
-        bxX + Math.floor(B_sprite.bitmap.width / 2),
+        centerBx,
         bY,
         barW,
         barH,
@@ -2421,10 +2540,10 @@ async function drawProjectileSequence({
         B_MAX
       )
 
-      // Cooldown bars (both visible)
+      // --- Cooldown bars (both visible) ---
       drawCooldownBar(
         frame,
-        axX + Math.floor(A_sprite.bitmap.width / 2),
+        centerAx,
         aY - 18,
         COOLDOWN_BAR_W,
         COOLDOWN_BAR_H,
@@ -2433,7 +2552,7 @@ async function drawProjectileSequence({
       )
       drawCooldownBar(
         frame,
-        bxX + Math.floor(B_sprite.bitmap.width / 2),
+        centerBx,
         bY - 18,
         COOLDOWN_BAR_W,
         COOLDOWN_BAR_H,
@@ -2441,13 +2560,9 @@ async function drawProjectileSequence({
         Math.max(0.8, totalCdB || cdB || 0.8)
       )
 
-      // Effects (big icons)
+      // --- Effect icons (big) ---
       const barYA = Math.max(0, aY - barH - 8)
       const barYB = Math.max(0, bY - barH - 8)
-      const centerAx =
-        axX + Math.floor(A_sprite.bitmap.width / 2)
-      const centerBx =
-        bxX + Math.floor(B_sprite.bitmap.width / 2)
 
       await drawEffectSummaryRow({
         frame,
@@ -2463,12 +2578,71 @@ async function drawProjectileSequence({
         effects: B_effectTotals,
         effectIcons,
       })
+
+      // --- MINI LIVE STATS PANELS (effect-adjusted), same logic as drawBarsAndEffects ---
+      if (aStats && bStats) {
+        const adjA = computeAttackerAdjustedStats(
+          aStats,
+          A_effectTotals
+        )
+        const adjB = computeAttackerAdjustedStats(
+          bStats,
+          B_effectTotals
+        )
+        const defA = computeDefenderAdjustedStats(
+          aStats,
+          A_effectTotals
+        )
+        const defB = computeDefenderAdjustedStats(
+          bStats,
+          B_effectTotals
+        )
+
+        const miniStatsA = {
+          health: A_HP,
+          strength: Math.round(adjA.strength ?? aStats.strength),
+          dexterity: Math.round(adjA.dexterity ?? aStats.dexterity),
+          intelligence: Math.round(
+            adjA.intelligence ?? aStats.intelligence
+          ),
+          resist: Math.round(defA.resist ?? aStats.resist),
+          speed: Math.round(adjA.speed ?? aStats.speed),
+        }
+
+        const miniStatsB = {
+          health: B_HP,
+          strength: Math.round(adjB.strength ?? bStats.strength),
+          dexterity: Math.round(adjB.dexterity ?? bStats.dexterity),
+          intelligence: Math.round(
+            adjB.intelligence ?? bStats.intelligence
+          ),
+          resist: Math.round(defB.resist ?? bStats.resist),
+          speed: Math.round(adjB.speed ?? bStats.speed),
+        }
+
+        await drawMiniStatsPanel({
+          frame,
+          side: 'A',
+          marginX: 16,
+          marginY: 16,
+          stats: miniStatsA,
+        })
+        await drawMiniStatsPanel({
+          frame,
+          side: 'B',
+          marginX: 16,
+          marginY: 16,
+          stats: miniStatsB,
+        })
+      }
     }
 
     await saveFrame(outFramesDir, fIdx++, frame)
   }
+
   return fIdx
 }
+
 
 
 /* ===================== VICTORY ===================== */
@@ -2514,6 +2688,7 @@ async function victorySequence({
     fIdx / FIGHT_FPS
   )
 
+  // === Zoom in on winner emote ===
   for (let i = 0; i < VICTORY_ZOOM_IN_FR; i++) {
     const t = easeInOut(i / (VICTORY_ZOOM_IN_FR - 1))
     const z = 1 + (VICTORY_ZOOM_MAX - 1) * t
@@ -2537,6 +2712,7 @@ async function victorySequence({
     await saveFrame(outFramesDir, fIdx++, cropped)
   }
 
+  // === Hold on max zoom ===
   for (let i = 0; i < VICTORY_HOLD_FRAMES; i++) {
     const z = VICTORY_ZOOM_MAX
     const cw = Math.round(bgW / z)
@@ -2560,17 +2736,17 @@ async function victorySequence({
     await saveFrame(outFramesDir, fIdx++, cropped)
   }
 
+  // === Victory banner (extended to fit reward row) ===
   const bannerW = Math.round(bgW * 0.92)
-  const bannerH = 132
+  const bannerH = 190 // was 132 – extended to fit +10,000 + logo row
   const banner = new Jimp(
     bannerW,
     bannerH,
     Jimp.cssColorToHex('#0e0a08')
   )
   banner.opacity(0.82)
-  const GOLD_HEX = Jimp.cssColorToHex(
-    'rgba(225,184,100,0.9)'
-  )
+
+  const GOLD_HEX = Jimp.cssColorToHex('rgba(225,184,100,0.9)')
   for (let x = 0; x < bannerW; x++) {
     banner.setPixelColor(GOLD_HEX, x, 0)
     banner.setPixelColor(GOLD_HEX, x, bannerH - 1)
@@ -2582,6 +2758,33 @@ async function victorySequence({
 
   const titleFont = await loadFontBuiltin(64, 'white')
   const msg = `${winnerName} is victorious!`
+
+  // === Dark Coin reward row setup ===
+  const rewardText = '+10,000'
+
+  // Adjust path if DC.svg lives somewhere else, e.g. 'assets/DC.svg'
+  const dcLogoRaw = await Jimp.read('DC.png')
+  const logoTargetH = Math.round(bannerH * 0.35)
+  const logoScale = logoTargetH / dcLogoRaw.bitmap.height
+  const dcLogo = dcLogoRaw
+    .clone()
+    .resize(
+      Math.round(dcLogoRaw.bitmap.width * logoScale),
+      logoTargetH,
+      Jimp.RESIZE_BICUBIC
+    )
+
+  const rewardTextWidth = Jimp.measureText(titleFont, rewardText)
+  const rewardTextHeight = Jimp.measureTextHeight(
+    titleFont,
+    rewardText,
+    rewardTextWidth
+  )
+
+  // Split banner into top (title) and bottom (reward) sections
+  const titleAreaHeight = Math.round(bannerH * 0.55)
+  const rewardRowTop = VICTORY_BANNER_TOP + titleAreaHeight
+  const rewardRowH = bannerH - titleAreaHeight
 
   for (let i = 0; i < VICTORY_BANNER_FRAMES; i++) {
     const z = VICTORY_ZOOM_MAX
@@ -2606,7 +2809,11 @@ async function victorySequence({
     const bx = Math.round((bgW - bannerW) / 2)
     const by = VICTORY_BANNER_TOP
     const frame = cropped
+
+    // Draw banner
     frame.composite(banner, bx, by)
+
+    // === Top: "X is victorious!" ===
     frame.print(
       titleFont,
       bx + 24,
@@ -2617,7 +2824,29 @@ async function victorySequence({
         alignmentY: Jimp.VERTICAL_ALIGN_MIDDLE,
       },
       bannerW - 48,
-      bannerH - 36
+      titleAreaHeight - 36
+    )
+
+    // === Bottom: "+10,000 [DC logo]" centered as a group ===
+    const logoW = dcLogo.bitmap.width
+    const logoH = dcLogo.bitmap.height
+    const groupW = rewardTextWidth + 16 + logoW
+
+    const groupX = bx + Math.round((bannerW - groupW) / 2)
+    const rewardY =
+      rewardRowTop +
+      Math.round((rewardRowH - rewardTextHeight) / 2)
+    const logoY =
+      rewardRowTop + Math.round((rewardRowH - logoH) / 2)
+
+    // Text: +10,000
+    frame.print(titleFont, groupX, rewardY, rewardText)
+
+    // Logo: Dark Coin
+    frame.composite(
+      dcLogo,
+      groupX + rewardTextWidth + 16,
+      logoY
     )
 
     await saveFrame(outFramesDir, fIdx++, frame)
@@ -2625,6 +2854,7 @@ async function victorySequence({
 
   return fIdx
 }
+
 
 async function fadeOutDefeated({
   bg,
@@ -2749,6 +2979,15 @@ function easeInOut(t) {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2
 }
 
+// Round a number to the nearest tenth for popup text
+const formatPopupNumber = (value) => {
+  if (!Number.isFinite(value)) return String(value)
+  const rounded = Math.round(value * 10) / 10
+  // Show "5" instead of "5.0", but keep one decimal when needed (e.g. "5.3")
+  return rounded % 1 === 0 ? String(rounded) : rounded.toFixed(1)
+}
+
+
 /* ===================== FIGHT SCENE ===================== */
 async function createFightFrames({
   aName,
@@ -2763,13 +3002,13 @@ async function createFightFrames({
   spriteAMoveBPath,
   spriteBMoveBPath,
   spriteAMoveCPath,
-  spriteBMoveCPath, // currently unused but accepted
+  spriteBMoveCPath,
   moveAVisualAPath,
   moveAVisualBPath,
   moveBVisualAPath,
   moveBVisualBPath,
   moveCVisualAPath,
-  moveCVisualBPath, // currently unused but accepted
+  moveCVisualBPath,
   statsPanelAPath,
   statsPanelBPath,
   movePanelAPath,
@@ -2778,14 +3017,12 @@ async function createFightFrames({
   scaleFraction,
   aStats,
   bStats,
-  aTypes,
-  bTypes, // kept for metadata/UI
   aMoveMetaA,
   aMoveMetaB,
-  aMoveMetaC, // currently unused
+  aMoveMetaC,
   bMoveMetaA,
   bMoveMetaB,
-  bMoveMetaC, // currently unused
+  bMoveMetaC,
   audioTimeline,
   effectIcons,
 }) {
@@ -2900,6 +3137,7 @@ async function createFightFrames({
     return frame
   }
 
+
       async function drawBarsAndEffects(
     frame,
     cdA,
@@ -2910,9 +3148,14 @@ async function createFightFrames({
     B_MAX
   ) {
     // Health bars
+    const centerAx =
+      axFinalX + Math.floor(A_idle.bitmap.width / 2)
+    const centerBx =
+      bxFinalX + Math.floor(B_idle.bitmap.width / 2)
+
     drawHealthBar(
       frame,
-      axFinalX + Math.floor(A_idle.bitmap.width / 2),
+      centerAx,
       aY,
       HEALTH_BAR_W,
       HEALTH_BAR_H,
@@ -2921,7 +3164,7 @@ async function createFightFrames({
     )
     drawHealthBar(
       frame,
-      bxFinalX + Math.floor(B_idle.bitmap.width / 2),
+      centerBx,
       bY,
       HEALTH_BAR_W,
       HEALTH_BAR_H,
@@ -2932,7 +3175,7 @@ async function createFightFrames({
     // Cooldown bars (both sides, always)
     drawCooldownBar(
       frame,
-      axFinalX + Math.floor(A_idle.bitmap.width / 2),
+      centerAx,
       aY - 18,
       COOLDOWN_BAR_W,
       COOLDOWN_BAR_H,
@@ -2941,7 +3184,7 @@ async function createFightFrames({
     )
     drawCooldownBar(
       frame,
-      bxFinalX + Math.floor(B_idle.bitmap.width / 2),
+      centerBx,
       bY - 18,
       COOLDOWN_BAR_W,
       COOLDOWN_BAR_H,
@@ -2952,10 +3195,6 @@ async function createFightFrames({
     // Effect icons + stacks (big) – ALWAYS visible
     const barYA = Math.max(0, aY - HEALTH_BAR_H - 8)
     const barYB = Math.max(0, bY - HEALTH_BAR_H - 8)
-    const centerAx =
-      axFinalX + Math.floor(A_idle.bitmap.width / 2)
-    const centerBx =
-      bxFinalX + Math.floor(B_idle.bitmap.width / 2)
 
     await drawEffectSummaryRow({
       frame,
@@ -2971,16 +3210,79 @@ async function createFightFrames({
       effects: B_effectTotals,
       effectIcons,
     })
+
+    // ===== MINI LIVE STATS PANELS (effect-adjusted) =====
+    // Attacker-style adjustments (STR/DEX/INT/SPD/ACC) from effects
+    const adjA = computeAttackerAdjustedStats(
+      aStats,
+      A_effectTotals
+    )
+    const adjB = computeAttackerAdjustedStats(
+      bStats,
+      B_effectTotals
+    )
+    // Defender-style resist from effects (bless/doom)
+    const defA = computeDefenderAdjustedStats(
+      aStats,
+      A_effectTotals
+    )
+    const defB = computeDefenderAdjustedStats(
+      bStats,
+      B_effectTotals
+    )
+
+    const miniStatsA = {
+      health: A_HP,
+      strength: Math.round(adjA.strength ?? aStats.strength),
+      dexterity: Math.round(adjA.dexterity ?? aStats.dexterity),
+      intelligence: Math.round(
+        adjA.intelligence ?? aStats.intelligence
+      ),
+      resist: Math.round(defA.resist ?? aStats.resist),
+      speed: Math.round(adjA.speed ?? aStats.speed),
+    }
+
+    const miniStatsB = {
+      health: B_HP,
+      strength: Math.round(adjB.strength ?? bStats.strength),
+      dexterity: Math.round(adjB.dexterity ?? bStats.dexterity),
+      intelligence: Math.round(
+        adjB.intelligence ?? bStats.intelligence
+      ),
+      resist: Math.round(defB.resist ?? bStats.resist),
+      speed: Math.round(adjB.speed ?? bStats.speed),
+    }
+
+    await drawMiniStatsPanel({
+      frame,
+      side: 'A',
+      marginX: 16,
+      marginY: 16,
+      stats: miniStatsA,
+    })
+    await drawMiniStatsPanel({
+      frame,
+      side: 'B',
+      marginX: 16,
+      marginY: 16,
+      stats: miniStatsB,
+    })
   }
 
 
 
-    /**
+
+
+     /**
    * Apply effect stacks after a move resolves.
    * - Uses effect_potency_base from charObj.
    * - Buffs & curses apply 2× potency.
    * - Buffs target self, curses & normal damage target the opponent.
    * - Stores stacks keyed by lower-case effect name for icon lookup.
+   *
+   * NEW:
+   * - Defender RESIST is a % chance to BLOCK the effect on non-buff moves.
+   * - On resist: no stacks are applied and we return { resisted: true }.
    */
   function applyEffectStacksForMove(meta, moveKind, isActorA) {
     const effectNameRaw = String(
@@ -2995,8 +3297,16 @@ async function createFightFrames({
     const isBuffK = moveKind === 'buff' || isBuffMove(meta)
     const isCurseK = moveKind === 'curse' || isCurseMove(meta)
 
-    const multiplier = isBuffK || isCurseK ? 2 : 1
-    const amount = basePotency * multiplier
+    let amount
+
+    if (isBuffK || isCurseK) {
+      amount = basePotency * 2
+    }
+    else {
+      amount = Math.ceil(basePotency / 2)
+    }
+
+  
 
     // Buff ⇒ self, everything else ⇒ opponent
     const targetSide = isBuffK
@@ -3004,18 +3314,52 @@ async function createFightFrames({
       : (isActorA ? 'B' : 'A')
 
     const key = effectNameRaw.toLowerCase()
-    const bucket = targetSide === 'A'
-      ? A_effectTotals
-      : B_effectTotals
+    const bucket =
+      targetSide === 'A' ? A_effectTotals : B_effectTotals
 
+    // ===== BUFFS: always apply, no resist check =====
+    if (isBuffK) {
+      bucket[key] = (bucket[key] || 0) + amount
+      return {
+        effectName: key,
+        amount,
+        targetSide,
+        resisted: false,
+      }
+    }
+
+    // ===== NON-BUFF EFFECTS: defender can resist =====
+    const defenderStats =
+      targetSide === 'A' ? aStats : bStats
+    const defenderEffects =
+      targetSide === 'A' ? A_effectTotals : B_effectTotals
+
+    const resistChance = computeDefenderResistChance(
+      defenderStats,
+      defenderEffects
+    )
+    const roll = Math.random() * 100
+
+    // Effect RESISTED: no stacks applied
+    if (roll < resistChance) {
+      return {
+        effectName: key,
+        amount: 0,
+        targetSide,
+        resisted: true,
+      }
+    }
+
+    // Effect APPLIES normally
     bucket[key] = (bucket[key] || 0) + amount
-
     return {
-      effectName: key, // for icon lookup
+      effectName: key,
       amount,
       targetSide,
+      resisted: false,
     }
   }
+
 
 
     async function animateEffectPopup({
@@ -3147,9 +3491,69 @@ async function createFightFrames({
     return fIdxLocal
   }
 
+    /**
+   * Floating "RESIST" popup above the defender when they block an effect.
+   */
+  async function animateResistPopup({
+    targetSide,   // 'A' or 'B'
+    framesSoFar,
+    cdA,
+    cdB,
+    A_HP,
+    A_MAX,
+    B_HP,
+    B_MAX,
+  }) {
+    let fIdxLocal = framesSoFar
+    const fontWhite = await loadFontBuiltin(32, 'white')
+    const fontBlack = await loadFontBuiltin(32, 'black')
 
-      // Apply DOT / HoT from effects ONLY to the side that is about to act.
-  async function applyOngoingEffectsForSide(side) {
+    const frames = 18
+    const risePx = 40
+    const text = 'RESIST'
+
+    const isTargetA = targetSide === 'A'
+    const centerX = isTargetA
+      ? axFinalX + Math.floor(A_idle.bitmap.width / 2)
+      : bxFinalX + Math.floor(B_idle.bitmap.width / 2)
+    const baseY = (isTargetA ? aY : bY) - 10
+
+    for (let i = 0; i < frames; i++) {
+      const t = i / Math.max(1, frames - 1)
+      const dy = Math.round(risePx * t)
+      const y = baseY - dy
+
+      const frame = bg.clone()
+      frame.composite(A_idle, axFinalX, aY)
+      frame.composite(B_idle, bxFinalX, bY)
+
+      // Bars + always-on effects
+      await drawBarsAndEffects(
+        frame,
+        cdA,
+        cdB,
+        A_HP,
+        A_MAX,
+        B_HP,
+        B_MAX
+      )
+
+      const approxTextW = text.length * 16
+      const x = centerX - Math.round(approxTextW / 2)
+
+      frame.print(fontBlack, x + 1, y + 1, text)
+      frame.print(fontWhite, x, y, text)
+
+      await saveFrame(outFramesDir, fIdxLocal++, frame)
+    }
+
+    return fIdxLocal
+  }
+
+
+
+        // Apply DOT / HoT from effects ONLY to the side that is about to act.
+  async function applyOngoingEffectsForSide(side, frameIndexForAudio) {
     const isA = side === 'A'
     const effects = isA ? A_effectTotals : B_effectTotals
     const delta = computeOngoingEffectHpDelta(effects)
@@ -3161,10 +3565,10 @@ async function createFightFrames({
     const otherMaxHp = isA ? B_MAX : A_MAX
 
     const newHp = clamp(prevHp + delta, 0, maxHp)
+    const roundedDelta = formatPopupNumber(Math.abs(delta))
     const popupText =
-      delta < 0
-        ? `-${Math.abs(delta).toFixed(1)}`
-        : `+${Math.abs(delta).toFixed(1)}`
+      delta < 0 ? `-${roundedDelta}` : `+${roundedDelta}`
+
 
     const centerX = isA
       ? axFinalX + Math.floor(A_idle.bitmap.width / 2)
@@ -3172,6 +3576,14 @@ async function createFightFrames({
     const spriteY = isA ? aY : bY
     const popupX = centerX - 10
     const popupY = spriteY - 10
+
+    const effectTimeSec =
+      (frameIndexForAudio ?? fIdx) / FIGHT_FPS
+
+    // DOT SFX: only when damage over time (not HoT like nurture)
+    if (delta < 0 && audioTimeline) {
+      audioTimeline.push('dot', effectTimeSec)
+    }
 
     if (delta < 0) {
       // Effect damage
@@ -3206,6 +3618,8 @@ async function createFightFrames({
         totalCdA,
         cdB,
         totalCdB,
+        aStats,
+        bStats,
       })
     } else {
       // Effect healing (nurture)
@@ -3240,12 +3654,21 @@ async function createFightFrames({
         totalCdA,
         cdB,
         totalCdB,
+        aStats,
+        bStats,
       })
     }
 
+    // Update HP
     if (isA) A_HP = newHp
     else B_HP = newHp
+
+    // If this DOT killed them, mark a death cue
+    if (newHp <= 0 && audioTimeline) {
+      audioTimeline.push('death', effectTimeSec)
+    }
   }
+
 
 
 
@@ -3339,23 +3762,6 @@ async function createFightFrames({
   let totalCdB = 1
   const dt = 1 / FIGHT_FPS
 
-    // Apply DOT/HoT from all current stacks once before a move resolves.
-  function applyOngoingEffectsBeforeTurn() {
-    const resA = applyOngoingEffectsOnce(
-      A_effectTotals,
-      A_HP,
-      A_MAX
-    )
-    A_HP = resA.newHp
-
-    const resB = applyOngoingEffectsOnce(
-      B_effectTotals,
-      B_HP,
-      B_MAX
-    )
-    B_HP = resB.newHp
-  }
-
 
   // Draw an idle frame and tick cooldown bars down toward 0
     const drawIdleFrameAndTick = async () => {
@@ -3428,15 +3834,6 @@ async function createFightFrames({
   }
 
 
-
-
-  const decideNextActor = () => {
-    if (cdA <= 0 && cdB <= 0) return speedFirst
-    if (cdA <= 0 && cdB > 0) return 'A'
-    if (cdB <= 0 && cdA > 0) return 'B'
-    return null
-  }
-
    for (let i = 0; i < 6; i++) await drawIdleFrameAndTick()
 
     duel_loop: while (A_HP > 0 && B_HP > 0) {
@@ -3487,9 +3884,9 @@ async function createFightFrames({
       continue
     }
 
-    // 3) Apply all ongoing DOT/HoT before this actor uses a move
         // 3) Apply DOT/HoT only to this actor, right before they move
-    await applyOngoingEffectsForSide(actor)
+    await applyOngoingEffectsForSide(actor, fIdx)
+
     if (A_HP <= 0 || B_HP <= 0) break duel_loop
 
     const { meta, spritePose, visualImg } = pickMoveFor(actor)
@@ -3521,7 +3918,7 @@ async function createFightFrames({
       await saveFrame(outFramesDir, fIdx++, frame)
     }
 
-    const category = String(meta.category || 'melee').toLowerCase()
+    const category = meta.type
     let impactTimeSec = null
 
         if (buff) {
@@ -3572,7 +3969,7 @@ async function createFightFrames({
     // Heal for the damage this move would deal (same damage formula, with stats/effects)
       const { dmg: healAmountRaw } = calcDamageRPG({
         movePower: meta.power,
-        category,
+        category: meta.type,
         attackerStats: isA ? aStats : bStats,
         defenderStats: isA ? bStats : aStats,
         attackerEffects: isA ? A_effectTotals : B_effectTotals,
@@ -3608,7 +4005,7 @@ async function createFightFrames({
           barW: HEALTH_BAR_W,
           barH: HEALTH_BAR_H,
           frames: 20,
-          popupText: `+${newHp - prev}`,
+          popupText: `+${formatPopupNumber(healedA)}`,
           popupStartX: popupX,
           popupStartY: popupY,
           popupRisePx: 36,
@@ -3620,26 +4017,32 @@ async function createFightFrames({
           totalCdA,
           cdB,
           totalCdB,
+          aStats,
+          bStats
         })
 
         A_HP = newHp
 
-        // Apply buff effect to caster, 2× potency
+        // Apply buff effect to caster, 2× potency (buffs never get resisted)
         const effEv = applyEffectStacksForMove(meta, moveKind, true)
-        if (effEv && effEv.amount > 0) {
-          fIdx = await animateEffectPopup({
-            targetSide: effEv.targetSide,
-            effectName: effEv.effectName,
-            amount: effEv.amount,
-            framesSoFar: fIdx,
-            cdA,
-            cdB,
-            A_HP,
-            A_MAX,
-            B_HP,
-            B_MAX,
-          })
+        if (effEv && effEv.effectName) {
+          // Buffs always applied ⇒ no RESIST popup here
+          if (!effEv.resisted && effEv.amount > 0) {
+            fIdx = await animateEffectPopup({
+              targetSide: effEv.targetSide,
+              effectName: effEv.effectName,
+              amount: effEv.amount,
+              framesSoFar: fIdx,
+              cdA,
+              cdB,
+              A_HP,
+              A_MAX,
+              B_HP,
+              B_MAX,
+            })
+          }
         }
+
       } else {
       const prev = B_HP
       const newHp = Math.min(B_MAX, prev + healAmount)
@@ -3659,16 +4062,16 @@ async function createFightFrames({
         B_sprite: B_idle,
         outFramesDir,
         framesSoFar: fIdx,
-        fromHp: prev,      // B old HP
-        toHp: newHp,       // B new HP
-        maxHp: B_MAX,      // ✅ B’s max
-        side: 'B',         // ✅ animate B’s bar
-        otherHp: A_HP,     // A stays fixed
+        fromHp: prev,    
+        toHp: newHp,     
+        maxHp: B_MAX,   
+        side: 'B',        
+        otherHp: A_HP,   
         otherMaxHp: A_MAX,
         barW: HEALTH_BAR_W,
         barH: HEALTH_BAR_H,
         frames: 20,
-        popupText: `+${newHp - prev}`,
+        popupText: `+${formatPopupNumber(healedA)}`,
         popupStartX: popupX,
         popupStartY: popupY,
         popupRisePx: 36,
@@ -3680,28 +4083,33 @@ async function createFightFrames({
         totalCdA,
         cdB,
         totalCdB,
+        aStats,
+        bStats
       })
 
       B_HP = newHp
 
-      const effEv = applyEffectStacksForMove(meta, moveKind, false)
-      if (effEv && effEv.amount > 0) {
-        fIdx = await animateEffectPopup({
-          targetSide: effEv.targetSide,
-          effectName: effEv.effectName,
-          amount: effEv.amount,
-          framesSoFar: fIdx,
-          cdA,
-          cdB,
-          A_HP,
-          A_MAX,
-          B_HP,
-          B_MAX,
-        })
+        const effEv = applyEffectStacksForMove(meta, moveKind, false)
+      if (effEv && effEv.effectName) {
+        if (!effEv.resisted && effEv.amount > 0) {
+          fIdx = await animateEffectPopup({
+            targetSide: effEv.targetSide,
+            effectName: effEv.effectName,
+            amount: effEv.amount,
+            framesSoFar: fIdx,
+            cdA,
+            cdB,
+            A_HP,
+            A_MAX,
+            B_HP,
+            B_MAX,
+          })
+        }
       }
+
     }
 
-               } else if (category === 'melee') {
+    } else if (category.substring(0,5) === 'melee') {
       // ===== MELEE ATTACK (movement + short projectile) =====
 
       // Small horizontal gap between attacker and defender
@@ -3836,7 +4244,7 @@ async function createFightFrames({
       }
 
 
-             } else {
+    } else {
       // ===== RANGED / MAGIC ATTACK (projectile / curse) =====
       // Symmetric logic for both sides:
       // - Projectiles start one character-width in front of the caster
@@ -3933,7 +4341,10 @@ async function createFightFrames({
         effectTotalsFont,
         A_effectTotals,
         B_effectTotals,
+        aStats,
+        bStats,
       })
+
 
       impactTimeSec =
         (projStart + PROJECTILE_FRAMES - 1) / FIGHT_FPS
@@ -3948,24 +4359,19 @@ async function createFightFrames({
       // Accuracy adjusted by attacker effects (paralyze, drown, focus, etc.)
       const attackerEffs = isA ? A_effectTotals : B_effectTotals
       const atkAdj = computeAttackerStatAdjustments(attackerEffs)
-      const baseAcc = Number(meta.accuracy) || 100
-      const effAcc = clamp(
-        baseAcc + (atkAdj.accuracyAdj || 0),
-        5,
-        100
-      )
+      const baseAcc = meta.accuracy
 
-      const hits = hitRoll <= effAcc
+      const hits = hitRoll <= baseAcc
       audioTimeline.push(hits ? 'hit' : 'miss', impactTimeSec)
 
       if (hits) {
-        const movePower = clamp(Number(meta.power) || 40, 1, 250)
+        const movePower = meta.power
         const attackerEffects = attackerEffs
         const defenderEffects = isA ? B_effectTotals : A_effectTotals
 
         const { dmg } = calcDamageRPG({
           movePower,
-          category,
+          category: meta.type,
           attackerStats: isA ? aStats : bStats,
           defenderStats: isA ? bStats : aStats,
           attackerEffects,
@@ -4000,17 +4406,29 @@ async function createFightFrames({
           totalCdA,
           cdB,
           totalCdB,
+
+          aStats,
+          bStats,
         })
+
 
         if (isA) {
           // ✅ A is attacker, B is defender → animate B’s bar
           const prev = B_HP
           const newHp = Math.max(0, prev - dmg)
+
+          if (newHp <= 0 && audioTimeline) {
+            audioTimeline.push('death', impactTimeSec)
+          }
+
           const popupX =
             bxFinalX +
             Math.floor(B_idle.bitmap.width / 2) -
             10
           const popupY = bY - 10
+
+          const dmgText = formatPopupNumber(dmg)
+
 
           fIdx = await animateHealthDrop({
             bg,
@@ -4031,7 +4449,7 @@ async function createFightFrames({
             barW: HEALTH_BAR_W,
             barH: HEALTH_BAR_H,
             frames: 20,
-            popupText: `-${dmg}`,
+            popupText: `-${dmgText}`,
             popupStartX: popupX,
             popupStartY: popupY,
             popupRisePx: 36,
@@ -4043,6 +4461,8 @@ async function createFightFrames({
             totalCdA,
             cdB,
             totalCdB,
+            aStats,
+            bStats
           })
 
           B_HP = newHp
@@ -4050,11 +4470,18 @@ async function createFightFrames({
           // ✅ B is attacker, A is defender → animate A’s bar
           const prev = A_HP
           const newHp = Math.max(0, prev - dmg)
+          if (newHp <= 0 && audioTimeline) {
+            audioTimeline.push('death', impactTimeSec)
+          }
+
           const popupX =
             axFinalX +
             Math.floor(A_idle.bitmap.width / 2) -
             10
           const popupY = aY - 10
+
+          const dmgText = formatPopupNumber(dmg)
+
 
           fIdx = await animateHealthDrop({
             bg,
@@ -4075,7 +4502,7 @@ async function createFightFrames({
             barW: HEALTH_BAR_W,
             barH: HEALTH_BAR_H,
             frames: 20,
-            popupText: `-${dmg}`,
+            popupText: `-${dmgText}`,
             popupStartX: popupX,
             popupStartY: popupY,
             popupRisePx: 36,
@@ -4087,27 +4514,45 @@ async function createFightFrames({
             totalCdA,
             cdB,
             totalCdB,
+            aStats,
+            bStats
           })
 
           A_HP = newHp
         }
 
-        // Apply effect stacks *after* HP change
+            // Apply effect stacks *after* HP change, with RESIST check
         const effEv = applyEffectStacksForMove(meta, moveKind, isA)
-        if (effEv && effEv.amount > 0) {
-          fIdx = await animateEffectPopup({
-            targetSide: effEv.targetSide,
-            effectName: effEv.effectName,
-            amount: effEv.amount,
-            framesSoFar: fIdx,
-            cdA,
-            cdB,
-            A_HP,
-            A_MAX,
-            B_HP,
-            B_MAX,
-          })
+        if (effEv && effEv.effectName) {
+          if (effEv.resisted) {
+            // Defender resisted the effect ⇒ RESIST popup instead
+            fIdx = await animateResistPopup({
+              targetSide: effEv.targetSide,
+              framesSoFar: fIdx,
+              cdA,
+              cdB,
+              A_HP,
+              A_MAX,
+              B_HP,
+              B_MAX,
+            })
+          } else if (effEv.amount > 0) {
+            // Effect successfully applied ⇒ normal effect popup
+            fIdx = await animateEffectPopup({
+              targetSide: effEv.targetSide,
+              effectName: effEv.effectName,
+              amount: effEv.amount,
+              framesSoFar: fIdx,
+              cdA,
+              cdB,
+              A_HP,
+              A_MAX,
+              B_HP,
+              B_MAX,
+            })
+          }
         }
+
       }
       else {
         // Simple MISS popup over the defender
@@ -4128,22 +4573,25 @@ async function createFightFrames({
     if (A_HP <= 0 || B_HP <= 0) break duel_loop
 
     // Cooldowns
-    if (isA) {
-      cdA =
-        Number(meta.cooldown_seconds) ||
-        powerToCooldownSeconds(meta.power)
-      totalCdA = Math.max(0.8, cdA)
-    } else {
-      cdB =
-        Number(meta.cooldown_seconds) ||
-        powerToCooldownSeconds(meta.power)
-      totalCdB = Math.max(0.8, cdB)
+    const cd = Number(meta.cooldown_seconds)
+    if (!Number.isFinite(cd) || cd <= 0) {
+      throw new Error(`Runtime move missing cooldown_seconds: ${meta?.name ?? meta?.id ?? '(unknown)'}`)
     }
+
+    if (isA) {
+      cdA = cd
+      totalCdA = Math.max(0.01, cd)
+    } else {
+      cdB = cd
+      totalCdB = Math.max(0.01, cd)
+    }
+
 
     for (let i = 0; i < 6; i++) await drawIdleFrameAndTick()
   }
 
-   const loser = A_HP <= 0 ? 'A' : 'B'
+     const loser = A_HP <= 0 ? 'A' : 'B'
+
   let fIdx2 = await fadeOutDefeated({
     bg,
     axFinalX,
@@ -4168,9 +4616,9 @@ async function createFightFrames({
     effectIcons,
   })
 
-
   const winner = loser === 'A' ? 'B' : 'A'
   const winnerName = winner === 'A' ? aName : bName
+
   fIdx2 = await victorySequence({
     bg,
     bgW,
@@ -4190,7 +4638,13 @@ async function createFightFrames({
     winnerName,
   })
 
-  return { frames: fIdx2 }
+  return {
+    frames: fIdx2,
+    winnerSide: winner,
+    loserSide: loser,
+    winnerName,
+  }
+
 }
 
 /* ===================== VIDEO STITCH ===================== */
@@ -4213,17 +4667,6 @@ async function stitchFramesToVideo(
   })
 }
 
-/* ===================== MUSIC & SFX ===================== */
-// (unchanged from your advanced script; using hash32 etc above)
-
-function floatTo16LE(f32) {
-  const out = new Int16Array(f32.length)
-  for (let i = 0; i < f32.length; i++) {
-    const x = Math.max(-1, Math.min(1, f32[i]))
-    out[i] = x < 0 ? x * 0x8000 : x * 0x7fff
-  }
-  return out
-}
 
 
 /* ===================== ALGOD ARENA + FIREBASE CHARACTERS ===================== */
@@ -4234,6 +4677,30 @@ const algodIndexer = new algosdk.Indexer(
   'https://mainnet-idx.algonode.cloud',
   443
 )
+
+async function findAssetHolders(assetId, { minAmount = 1, maxAccounts = 1 } = {}) {
+  if (!Number.isFinite(Number(assetId))) {
+    throw new Error(`findAssetHolders: invalid assetId ${assetId}`)
+  }
+
+  // One-page fetch (usually enough for NFTs)
+  const res = await algodIndexer.lookupAssetBalances(Number(assetId)).do()
+  const balances = Array.isArray(res?.balances) ? res.balances : []
+
+  const holders = balances
+    .map(b => ({
+      address: b.address,
+      amount: Number(b.amount || 0),
+      isFrozen: Boolean(b['is-frozen'] ?? b.isFrozen ?? false),
+    }))
+    .filter(h => h.amount >= minAmount)
+
+  // Sort descending by amount (helpful if asset isn't strictly 1-of-1)
+  holders.sort((a, b) => b.amount - a.amount)
+
+  return holders.slice(0, maxAccounts)
+}
+
 
 /** Base64 key → big-endian uint (ASA ID) */
 function decodeKeyToUint(b64Key) {
@@ -4290,47 +4757,32 @@ function extractTypesFromCharObj(charObj) {
   return [...out]
 }
 
-/** Simple category inference from move.type string */
-function determineCategoryFromMoveType(typeStr = '') {
-  const s = String(typeStr || '').toLowerCase()
-  if (s.includes('melee')) return 'melee'
-  if (s.includes('ranged')) return 'ranged'
-  if (s.includes('magic') || s.includes('spell') || s.includes('curse'))
-    return 'magic'
-  return 'melee'
-}
 
 /** Map Firebase move into internal meta shape (no effect potency here). */
-function arenaMoveToPipelineMove(
-  arenaMove = {},
-  fallbackCategory = 'melee'
-) {
-  const typeStr = String(arenaMove.type || 'skill')
-  const category =
-    determineCategoryFromMoveType(typeStr) || fallbackCategory
-  const power = Number(arenaMove.power) || 40
-  const accuracy = Number(arenaMove.accuracy) || 90
+function arenaMoveToPipelineMove(arenaMove) {
+  const power = Number(arenaMove.power)
+
   const cdNum = Number(arenaMove.cooldown)
 
-  const cooldown_seconds =
-    Number.isFinite(cdNum) && cdNum > 0
-      ? cdNum
-      : powerToCooldownSeconds(power)
-
-  const effectName = arenaMove.effect || ''
+  if (!Number.isFinite(cdNum) || cdNum <= 0) {
+    throw new Error(
+      `Move ${arenaMove?.name ?? arenaMove?.id ?? '(unknown)'} missing valid cooldown`
+    )
+  }
 
   return {
-    name: arenaMove.name || 'Unnamed Move',
-    type: typeStr,
-    category,
+    id: arenaMove.id,
+    name: arenaMove.name,
+    type: arenaMove.type,
     power,
-    accuracy,
-    cooldown_seconds,
-    effect: effectName,
-    trait: arenaMove.trait || '',
-    description: arenaMove.description || '',
+    accuracy: Number(arenaMove.accuracy) || 75,
+    effect: arenaMove.effect ?? null,
+
+    // ✅ ONLY the attached cooldown:
+    cooldown_seconds: cdNum,
   }
 }
+
 
 
 /**
@@ -4343,8 +4795,39 @@ async function prepareArenaCharacter(arenaRecord, indexLabel) {
   if (!arenaRecord?.char?.charObj) {
     throw new Error('Arena record missing charObj')
   }
-
+  console.log(arenaRecord.assetId)
   const charObj = arenaRecord.char.charObj
+
+  try {
+
+    let accountBoxPoints = await client.getApplicationBoxByName(1870514811, new Uint8Array([...longToByteArray(arenaRecord.assetId), ...new Uint8Array(Buffer.from("points"))])).do();                            
+
+    let points = accountBoxPoints.value
+
+    charObj.poison += points[0]
+    charObj.bleed += points[100]
+    charObj.burn += points[200]
+    charObj.freeze += points[300]
+    charObj.slow += points[400]
+    charObj.drown += points[500]
+    charObj.paralyze += points[600]
+    charObj.doom += points[700]
+
+    charObj.shield += points[800]
+    charObj.strengthen += points[900]
+    charObj.focus += points[1000]
+    charObj.empower += points[1100]
+    charObj.nurture += points[1200]
+    charObj.bless += points[1300]
+    charObj.hasten += points[1400]
+    charObj.cleanse += points[1500]
+
+  }
+  catch {
+    console.log("no skill tree found")
+  }
+
+  
 
   const name = charObj.name || `Arena ${arenaRecord.assetId}`
   const slug = slugify(name)
@@ -4485,11 +4968,10 @@ async function prepareArenaCharacter(arenaRecord, indexLabel) {
   // Move meta – power from Firebase, effect potency from charObj, accuracy/CD balanced
   const mapMove = (src) => {
     const m0 = arenaMoveToPipelineMove(src, 'melee')
+
     const effectName = String(src.effect || '').trim()
     const key = effectName.toLowerCase()
-    const potencyBase = key
-      ? Number(effectPotencies[key] || 0)
-      : 0
+    const potencyBase = key ? Number(effectPotencies[key] || 0) : 0
 
     const withEffect = {
       ...m0,
@@ -4497,9 +4979,19 @@ async function prepareArenaCharacter(arenaRecord, indexLabel) {
       effect_potency_base: potencyBase,
     }
 
-    const m1 = balanceMoveAccuracy(withEffect)
-    return normalizeMoveCooldown(m1)
-  }
+    const m1 = withEffect
+
+    // ✅ Enforce: cooldown must already exist and be valid
+    const cd = Number(m1.cooldown_seconds ?? src.cooldown ?? m1.cooldown)
+    if (!Number.isFinite(cd) || cd <= 0) {
+      throw new Error(
+        `Move missing valid cooldown: ${src?.name ?? src?.id ?? '(unknown)'}`
+      )
+    }
+
+  return { ...m1, cooldown_seconds: cd }
+}
+
 
   const moveA = mapMove(move0)
   const moveB = mapMove(move1)
@@ -4512,6 +5004,7 @@ async function prepareArenaCharacter(arenaRecord, indexLabel) {
     race: charObj.race || 'unknown',
     class: charObj.class || 'unknown',
   }
+
 
   return {
     creature_name: name,
@@ -4550,11 +5043,13 @@ async function generateFightBackground(aName, bName, outDir) {
   const finalPath = path.join(outDir, 'fight_bg.png')
 
   const prompt = `
-Old-school pixel-art style medieval castle arena, vertical scene.
-Stone walls, banners, torches, and a dramatic dueling platform.
-Cinematic lighting, room for two characters to face off.
+Old-school pixel-art style medieval castle arena, vertical scene, have the arena platform cover the entire bottom half of the image.
+Wide stone platform in the center where the fighters will stand,
+Stone walls, banners with a dark cresent moon in a white circle, and torches in the background, but absolutely **no characters,
+no people, no creatures** anywhere in the scene.
+Cinematic moody lighting, but the platform itself is empty.
 No UI, no text, just the environment.
-Mood: dark fantasy, Dark Coin arena, ${aName} vs ${bName}.
+Mood: dark fantasy, Dark Coin arena.
 `
 
   try {
@@ -4736,6 +5231,7 @@ async function mainOnce() {
     statIcons,
     typeIcons,
     effectIcons,
+    stats: A.stats
   })
   await renderMoveBoardPanel({
     outPath: movePanelBPath,
@@ -4746,6 +5242,7 @@ async function mainOnce() {
     statIcons,
     typeIcons,
     effectIcons,
+    stats: B.stats
   })
 
   const spriteAIdle = A.spriteIdlePath
@@ -4762,7 +5259,7 @@ async function mainOnce() {
 
   const framesDir = path.join(fightDir, 'frames')
   const audioTimeline = makeAudioTimeline()
-  const { frames } = await createFightFrames({
+  const { frames, winnerSide, loserSide, winnerName } = await createFightFrames({
     aName: A.creature_name,
     bName: B.creature_name,
     backgroundPath: bgPath,
@@ -4806,7 +5303,7 @@ async function mainOnce() {
     `Fight frames created: ${frames} frames at ${FIGHT_FPS} fps`
   )
 
-  const silentVideo = path.join(
+    const silentVideo = path.join(
     fightDir,
     'character_duel.mp4'
   )
@@ -4816,8 +5313,16 @@ async function mainOnce() {
     FIGHT_FPS
   )
 
-  // If you later call buildAndMuxAudio, set finalVideo accordingly.
-  const finalVideo = silentVideo
+  const durationSec = frames / FIGHT_FPS
+
+  // Build battle music + SFX track and mux into the final video
+  const finalVideo = await buildAndMuxAudio({
+    videoPath: silentVideo,
+    audioTimeline,
+    outDir: fightDir,
+    durationSec,
+  })
+
 
   console.log('\n=== Summary ===')
   console.log(
@@ -4838,6 +5343,120 @@ async function mainOnce() {
     `Fight BG (old-school castle RPG): ${bgPath}`
   )
   console.log(`Video: ${finalVideo}`)
+
+    // ==== WINNER + LOSER ASSET + HOLDER LOOKUP (post-video) ====
+try {
+  const winnerAssetId =
+    winnerSide === 'A'
+      ? A?.arena?.assetId
+      : B?.arena?.assetId
+
+  const loserAssetId =
+    loserSide === 'A'
+      ? A?.arena?.assetId
+      : B?.arena?.assetId
+
+  console.log('\n🏆 Fight outcome:')
+  console.log(`  Winner side: ${winnerSide}`)
+  console.log(`  Winner name: ${winnerName}`)
+  console.log(`  Winner assetId: ${winnerAssetId}`)
+  console.log(`  Loser side: ${loserSide}`)
+  console.log(`  Loser assetId: ${loserAssetId}`)
+
+  // If you want to find holders for BOTH:
+  if (winnerAssetId) {
+    const winHolders = await findAssetHolders(winnerAssetId, {
+      minAmount: 1,
+      maxAccounts: 1,
+    })
+    console.log(`  Winner holder(s):`)
+    if (!winHolders.length) console.log('   - none found')
+    else {
+
+      console.log(winHolders[0])
+      console.log(winHolders[0].address)
+
+      let txns = []
+
+      // ---------- TXN 1: reward ----------
+      let appArgs1 = [
+        new Uint8Array(Buffer.from("reward")),
+      ]
+
+      let accounts1 = [winHolders[0].address]
+      let foreignApps1 = []
+      let foreignAssets1 = [winnerAssetId, loserAssetId, 1088771340]
+      let boxes1 = []
+
+      const rewardTxn = algosdk.makeApplicationNoOpTxn(
+        houseAccount.addr,        // or the hard-coded address if that's the actual sender
+        params,
+        3339943603,               // reward app ID
+        appArgs1,
+        accounts1,
+        foreignApps1,
+        foreignAssets1,
+        undefined,
+        undefined,
+        undefined,
+        boxes1
+      )
+
+      txns.push(rewardTxn)
+
+      // ---------- TXN 2: grantXp ----------
+      let appArgs2 = [
+        new Uint8Array(Buffer.from("grantXp")),
+        algosdk.encodeUint64(5),
+      ]
+
+      let accounts2 = []
+      let foreignApps2 = []
+      let foreignAssets2 = [winnerAssetId]
+
+      let assetInt = longToByteArray(winnerAssetId)
+      let assetBox = new Uint8Array([...assetInt, ...new Uint8Array(Buffer.from("xp"))])
+      let boxes2 = [{ appIndex: 0, name: assetBox }] // 0 == current app
+
+      const xpTxn = algosdk.makeApplicationNoOpTxn(
+        houseAccount.addr,        // same sender if they should both be from house
+        params,
+        1870514811,               // xp app ID
+        appArgs2,
+        accounts2,
+        foreignApps2,
+        foreignAssets2,
+        undefined,
+        undefined,
+        undefined,
+        boxes2
+      )
+
+      txns.push(xpTxn)
+
+      // ---------- GROUP + SIGN ----------
+      if (txns.length > 1) {
+        algosdk.assignGroupID(txns) // mutates txns in place
+      }
+
+      const signedTxns = txns.map((t) => t.signTxn(houseAccount.sk))
+
+      // ---------- SUBMIT ----------
+      let { txId } = await client.sendRawTransaction(signedTxns).do()
+      let confirmedTxn = await algosdk.waitForConfirmation(client, txId, 4)
+
+      console.log(confirmedTxn)
+
+
+    }
+  }
+
+  
+} catch (e) {
+  console.warn('⚠️ Outcome holder lookup failed:', e?.message || e)
+}
+
+
 
   // === Optional YouTube upload ===
   // const durationSec = frames / FIGHT_FPS
