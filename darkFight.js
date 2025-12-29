@@ -7,7 +7,7 @@ import 'dotenv/config'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import path from 'path'
-import OpenAI from 'openai'
+import OpenAI, { toFile } from 'openai'
 import Jimp from 'jimp'
 import ffmpeg from 'fluent-ffmpeg'
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg'
@@ -91,15 +91,7 @@ let params = await client.getTransactionParams().do()
 /* ===================== YOUTUBE/OAUTH CONFIG ===================== */
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET
-let GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN
 
-const houseAccount =  algosdk.mnemonicToSecretKey()
-
-
-// Firebase public config (to fetch creds/creds.GOOGLE_REFRESH_TOKEN and chars)
-const firebaseConfig = {
-  
-}
 const firebase_app =
   getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
 const db = getFirestore(firebase_app)
@@ -202,49 +194,18 @@ async function uploadToYouTube({
 
 function makeYouTubeMetadataShorts({
   aName,
-  aTypes,
-  aMoves,
   bName,
-  bTypes,
-  bMoves,
   durationSec,
 }) {
-  const aTypeStr = Array.isArray(aTypes)
-    ? aTypes.join('/')
-    : String(aTypes || 'Unknown')
-  const bTypeStr = Array.isArray(bTypes)
-    ? bTypes.join('/')
-    : String(bTypes || 'Unknown')
+  
 
   const title = `Dark Coin arena duel: ${aName} vs ${bName}`.slice(0, 100)
 
   const lines = []
   lines.push(
-    `${aName} (${aTypeStr}) vs ${bName} (${bTypeStr}) — blockchain warriors from the Dark Coin arena.`
+    `${aName} vs ${bName} — blockchain champions from the Dark Coin arena.`
   )
-  lines.push('')
-  lines.push(`${aName} moves:`)
-  lines.push(
-    ` • ${aMoves[0].name} — ${aMoves[0].type} (${aMoves[0].category}) P${aMoves[0].power}/A${aMoves[0].accuracy}% · CD ${aMoves[0].cooldown_seconds}s`
-  )
-  lines.push(
-    ` • ${aMoves[1].name} — ${aMoves[1].type} (${aMoves[1].category}) P${aMoves[1].power}/A${aMoves[1].accuracy}% · CD ${aMoves[1].cooldown_seconds}s`
-  )
-  lines.push('')
-  lines.push(`${bName} moves:`)
-  lines.push(
-    ` • ${bMoves[0].name} — ${bMoves[0].type} (${bMoves[0].category}) P${bMoves[0].power}/A${bMoves[0].accuracy}% · CD ${bMoves[0].cooldown_seconds}s`
-  )
-  lines.push(
-    ` • ${bMoves[1].name} — ${bMoves[1].type} (${bMoves[1].category}) P${bMoves[1].power}/A${bMoves[1].accuracy}% · CD ${bMoves[1].cooldown_seconds}s`
-  )
-  lines.push('')
-  lines.push(
-    `Render: ${Math.round(
-      durationSec
-    )}s @ ${FIGHT_FPS}fps · Old-school castle RPG arena · Sprites and stats from on-chain Dark Coin characters.`
-  )
-  lines.push('')
+  
   lines.push('#shorts #algorand #darkcoin #gamedev #blockchaingaming')
 
   const tags = sanitizeTags([
@@ -437,23 +398,6 @@ const STAT_BOUNDS = {
 }
 
 
-/* ===================== MOVE META (cooldowns + categories) ===================== */
-
-
-function balanceMoveAccuracy(move) {
-  const p = clamp(Number(move.power) || 40, 20, 150)
-  const targetAcc = clamp(
-    Math.round(95 - ((p - 20) * (40 / 130))),
-    55,
-    95
-  )
-  const given = clamp(Number(move.accuracy) || targetAcc, 50, 100)
-  const balanced = Math.round(targetAcc * 0.7 + given * 0.3)
-  return { ...move, power: p, accuracy: balanced }
-}
-
-
-
 
 /* ===================== EFFECT-DRIVEN STAT ADJUSTMENTS & DOT ===================== */
 
@@ -546,6 +490,178 @@ function computeOngoingEffectHpDelta(effects = {}) {
   return delta
 }
 
+// Replace your NEGATIVE_EFFECT_KEYS with exactly these (as requested)
+const NEGATIVE_EFFECT_KEYS = new Set([
+  'bleed',
+  'burn',
+  'freeze',
+  'slow',
+  'paralyze',
+  'drown',
+  'doom',
+  'poison',
+])
+
+const getStack = (obj, k) => {
+  const v = Number(obj?.[k] ?? 0)
+  return Number.isFinite(v) ? v : 0
+}
+
+/**
+ * Consume up to `cleanseAmount` from negative effects on `bucket`.
+ * Priority rule: remove from the largest stack first, then next largest, etc.
+ * (This matches your examples deterministically.)
+ */
+function consumeCleanseFromNegatives(bucket, cleanseAmount) {
+  let remaining = Math.max(0, Math.floor(Number(cleanseAmount) || 0))
+  if (!remaining) return { removedTotal: 0, removedByEffect: {}, remainingCleanse: 0 }
+
+  // Collect present negative stacks
+  const entries = Object.keys(bucket)
+    .filter((k) => NEGATIVE_EFFECT_KEYS.has(k) && getStack(bucket, k) > 0)
+    .map((k) => ({ k, v: getStack(bucket, k) }))
+
+  if (entries.length === 0) {
+    return { removedTotal: 0, removedByEffect: {}, remainingCleanse: remaining }
+  }
+
+  // Largest-first removal (stable/deterministic; tiebreak by name)
+  entries.sort((a, b) => (b.v - a.v) || a.k.localeCompare(b.k))
+
+  const removedByEffect = {}
+  let removedTotal = 0
+
+  for (const e of entries) {
+    if (remaining <= 0) break
+    const take = Math.min(e.v, remaining)
+    const next = e.v - take
+
+    if (next > 0) bucket[e.k] = next
+    else delete bucket[e.k]
+
+    removedByEffect[e.k] = (removedByEffect[e.k] || 0) + take
+    removedTotal += take
+    remaining -= take
+  }
+
+  return { removedTotal, removedByEffect, remainingCleanse: remaining }
+}
+
+function makeApplyEffectStacksForMove({
+  A_effectTotals,
+  B_effectTotals,
+  aStats,
+  bStats,
+}) {
+  return function applyEffectStacksForMove(meta, moveKind, isActorA) {
+    const effectNameRaw = String(meta.effect_name || meta.effect || '').trim()
+    if (!effectNameRaw) return null
+
+    const key = effectNameRaw.toLowerCase()
+
+    let basePotency = Number(meta.effect_potency_base ?? meta.effect_potency ?? 0)
+    if (!Number.isFinite(basePotency)) basePotency = 0
+
+    const isBuffK = moveKind === 'buff' || isBuffMove(meta)
+    const isCurseK = moveKind === 'curse' || isCurseMove(meta)
+
+    let amount
+    if (isBuffK || isCurseK) amount = basePotency * 2
+    else amount = Math.ceil(basePotency / 2)
+
+    // ===== CLEANSE SPECIAL CASE (amount-based removal) =====
+    if (key === 'cleanse') {
+      const targetSide = isActorA ? 'A' : 'B'
+      const bucket = targetSide === 'A' ? A_effectTotals : B_effectTotals
+
+      // Remove up to `amount` negative stacks across the listed negatives
+      const res = consumeCleanseFromNegatives(bucket, amount)
+
+      // If there is leftover cleanse and no more negatives to remove, store as guard
+      if (res.remainingCleanse > 0) {
+        bucket.cleanse = getStack(bucket, 'cleanse') + res.remainingCleanse
+      }
+
+      return {
+        effectName: 'cleanse',
+        amount,                     // amount attempted/applied
+        targetSide,
+        resisted: false,
+        cleansedTotal: res.removedTotal,
+        cleansedByEffect: res.removedByEffect,
+        cleanseGuardAdded: res.remainingCleanse, // how many guard stacks were added
+      }
+    }
+
+    // For non-cleanse effects, potency must exist
+    if (!basePotency) return null
+
+    // Buff ⇒ self, everything else ⇒ opponent
+    const targetSide = isBuffK
+      ? (isActorA ? 'A' : 'B')
+      : (isActorA ? 'B' : 'A')
+
+    const bucket = targetSide === 'A' ? A_effectTotals : B_effectTotals
+
+    // ===== CLEANSE GUARD BLOCKS NEGATIVE EFFECTS =====
+    // Only consider applications that are being applied to the opponent (i.e., negative status application)
+    const actorSide = isActorA ? 'A' : 'B'
+    const isNegativeApplication = !isBuffK && targetSide !== actorSide
+
+    if (isNegativeApplication) {
+      const cleanseGuard = getStack(bucket, 'cleanse')
+      if (cleanseGuard > 0) {
+        const next = cleanseGuard - 1
+        if (next > 0) bucket.cleanse = next
+        else delete bucket.cleanse
+
+        // Block the effect entirely (re-using your existing resisted handling)
+        return {
+          effectName: key,
+          amount: 0,
+          targetSide,
+          resisted: true,
+          blockedBy: 'cleanse',
+        }
+      }
+    }
+
+    // ===== BUFFS: always apply, no resist check =====
+    if (isBuffK) {
+      bucket[key] = (bucket[key] || 0) + amount
+      return { effectName: key, amount, targetSide, resisted: false }
+    }
+
+    // ===== NON-BUFF EFFECTS: defender can resist =====
+    const defenderStats = targetSide === 'A' ? aStats : bStats
+    const defenderEffects = targetSide === 'A' ? A_effectTotals : B_effectTotals
+
+    const resistChance = computeDefenderResistChance(defenderStats, defenderEffects)
+    const roll = Math.random() * 100
+
+    if (roll < resistChance) {
+      return { effectName: key, amount: 0, targetSide, resisted: true }
+    }
+
+    bucket[key] = (bucket[key] || 0) + amount
+    return { effectName: key, amount, targetSide, resisted: false }
+  }
+}
+
+function isMelee(category = '') {
+  return String(category).toLowerCase().startsWith('melee')
+}
+
+function isRanged(category = '') {
+  return String(category).toLowerCase().startsWith('ranged')
+}
+
+function isMagic(category = '') {
+  return String(category).toLowerCase().startsWith('magic')
+}
+
+
+
 /* ===================== DAMAGE (TYPELESS, BUT STAT + EFFECT AWARE) ===================== */
 /**
  * RPG damage:
@@ -560,40 +676,37 @@ function calcDamageRPG({
   movePower,
   category,
   attackerStats,
-  defenderStats,     // kept in signature for compatibility, but not used
+  defenderStats,     // kept in signature for compatibility
   attackerEffects = {},
-  defenderEffects = {}, // same
+  defenderEffects = {},
 }) {
-
-
-  // EFFECT-ADJUSTED ATTACKER STATS
-  const adjAtk = computeAttackerAdjustedStats(
-    attackerStats,
-    attackerEffects
-  )
-
-
-  console.log(adjAtk)
-  console.log(category)
+  const adjAtk = computeAttackerAdjustedStats(attackerStats, attackerEffects)
 
   // Melee ⇒ STR, Ranged ⇒ DEX, Magic ⇒ INT
   let offensiveStat = 0
   if (category === 'ranged curse' || category === 'ranged buff' || category === 'ranged damage') {
     offensiveStat = adjAtk.dexterity ?? attackerStats.dexterity ?? 0
   } else if (category === 'magic curse' || category === 'magic buff' || category === 'magic damage') {
-    offensiveStat =
-      adjAtk.intelligence ?? attackerStats.intelligence ?? 0
+    offensiveStat = adjAtk.intelligence ?? attackerStats.intelligence ?? 0
   } else {
-    // default melee
     offensiveStat = adjAtk.strength ?? attackerStats.strength ?? 0
   }
 
+  let dmg = movePower + offensiveStat
 
+  // ===== SHIELD MITIGATION =====
+  // If defender has "shield" and this is a melee/ranged attack, reduce damage by floor(shield/2).
+  const shieldStacks = getStack(defenderEffects, 'shield')
+  let shieldMitigation = 0
 
-  const dmg = movePower + offensiveStat
+  if (shieldStacks > 0 && (isMelee(category) || isRanged(category))) {
+    shieldMitigation = Math.floor(shieldStacks / 2)
+    dmg = Math.max(0, dmg - shieldMitigation)
+  }
 
-  return { dmg, eff: 1.0, stab: 1.0 }
+  return { dmg, eff: 1.0, stab: 1.0, shieldMitigation }
 }
+
 
 
 
@@ -713,6 +826,7 @@ function computeAttackerAdjustedStats(baseStats, effects) {
   }
   if (paralyze) {
     accuracyAdj -= paralyze * 0.2
+    speedAdj -= paralyze * 0.2
   }
   if (drown) {
     dexterityAdj -= drown * 0.3
@@ -730,7 +844,8 @@ function computeAttackerAdjustedStats(baseStats, effects) {
     intelligenceAdj += empower * 0.3
   }
   if (hasten) {
-    dexterityAdj += hasten * 0.3
+    dexterityAdj += hasten * 0.2
+    speedAdj += hasten * 0.2
   }
   if (bless) {
     strengthAdj += bless * 0.2
@@ -1281,6 +1396,21 @@ async function renderStatsPanel({
   return { path: outPath, width: panelW, height: panelH }
 }
 
+const roundToTenth = (x) => Math.round(x * 10) / 10
+
+  function getEffectiveSpeed(baseStats, effectTotals) {
+    // Use your existing effect-aware stat computation
+    const adj = computeAttackerAdjustedStats(baseStats, effectTotals)
+    const s = Number(adj?.speed ?? baseStats?.speed ?? 100)
+    return Math.max(1, s) // prevent division by 0 / negatives
+  }
+
+  function computeEffectiveCooldownSeconds(baseCooldownSeconds, speed) {
+    const base = Number(baseCooldownSeconds)
+    if (!Number.isFinite(base) || base <= 0) return 0
+    return roundToTenth(base * (100 / Math.max(1, Number(speed) || 1)))
+  }
+
 /* ===================== MOVE BOARD (bottom) ===================== */
 async function renderMoveBoardPanel({
   outPath,
@@ -1555,8 +1685,16 @@ async function renderMoveBoardPanel({
       labelX += 18 + 6
     }
     panel.print(smallFont, labelX, rowY + 2, 'CD')
-    const cdVal = move.cooldown_seconds
-    const cdPct = cdVal / Math.max(0.8, maxCD)
+
+    // Base cooldown from move meta
+    const baseCdVal = Number(move.cooldown_seconds) || 0
+
+    // Effective cooldown from speed (renderMoveBoardPanel uses "stats" passed in)
+    const sp = Math.max(1, Number(stats?.speed) || 100)
+    const effCdVal = computeEffectiveCooldownSeconds(baseCdVal, sp)
+
+    const cdPct = effCdVal / Math.max(0.8, maxCD)
+
     drawStatBar(
       panel,
       statBarLeft,
@@ -1567,12 +1705,15 @@ async function renderMoveBoardPanel({
       '#2a2018',
       '#ffffff'
     )
+
     panel.print(
       smallFont,
       statBarLeft + statBarW + 6,
       rowY + 2,
-      `${cdVal.toFixed(2)}s`
+      `${effCdVal.toFixed(1)}s`
     )
+
+
 
     // --- EFFECT ICON + POTENCY ---
     rowY += statBarH + 6
@@ -1724,8 +1865,10 @@ async function buildAndMuxAudio({
   )
 
   const fadeInSec = 1.5
-  const fadeOutSec = 1.5
-  const fadeOutStart = Math.max(0, durationSec - fadeOutSec)
+
+  // Fade out starts halfway through and goes until the very end
+  const fadeOutStart = durationSec / 2
+  const fadeOutSec = durationSec - fadeOutStart // i.e., also durationSec / 2
 
   // --- Step 1: build LOOPED BGM (NO fades yet) ---
   await new Promise((resolve, reject) => {
@@ -1832,6 +1975,7 @@ async function buildAndMuxAudio({
 
   return finalVideoPath
 }
+
 
 
 
@@ -2683,10 +2827,7 @@ async function victorySequence({
     return frame
   }
 
-  audioTimeline.push(
-    winner === 'A' ? 'emoteA' : 'emoteB',
-    fIdx / FIGHT_FPS
-  )
+  audioTimeline.push(winner === 'A' ? 'emoteA' : 'emoteB', fIdx / FIGHT_FPS)
 
   // === Zoom in on winner emote ===
   for (let i = 0; i < VICTORY_ZOOM_IN_FR; i++) {
@@ -2694,21 +2835,10 @@ async function victorySequence({
     const z = 1 + (VICTORY_ZOOM_MAX - 1) * t
     const cw = Math.round(bgW / z)
     const ch = Math.round(bgH / z)
-    const x0 = clamp(
-      Math.round(emoteCenter.cx - cw / 2),
-      0,
-      bgW - cw
-    )
-    const y0 = clamp(
-      Math.round(emoteCenter.cy - ch / 2),
-      0,
-      bgH - ch
-    )
+    const x0 = clamp(Math.round(emoteCenter.cx - cw / 2), 0, bgW - cw)
+    const y0 = clamp(Math.round(emoteCenter.cy - ch / 2), 0, bgH - ch)
     const base = await baseEmoteFrame()
-    const cropped = base
-      .clone()
-      .crop(x0, y0, cw, ch)
-      .resize(bgW, bgH, Jimp.RESIZE_BICUBIC)
+    const cropped = base.clone().crop(x0, y0, cw, ch).resize(bgW, bgH, Jimp.RESIZE_BICUBIC)
     await saveFrame(outFramesDir, fIdx++, cropped)
   }
 
@@ -2717,33 +2847,17 @@ async function victorySequence({
     const z = VICTORY_ZOOM_MAX
     const cw = Math.round(bgW / z)
     const ch = Math.round(bgH / z)
-    const x0 = clamp(
-      Math.round(emoteCenter.cx - cw / 2),
-      0,
-      bgW - cw
-    )
-    const y0 = clamp(
-      Math.round(emoteCenter.cy - ch / 2),
-      0,
-      bgH - ch
-    )
+    const x0 = clamp(Math.round(emoteCenter.cx - cw / 2), 0, bgW - cw)
+    const y0 = clamp(Math.round(emoteCenter.cy - ch / 2), 0, bgH - ch)
     const base = await baseEmoteFrame()
-    const cropped = base
-      .clone()
-      .crop(x0, y0, cw, ch)
-      .resize(bgW, bgH, Jimp.RESIZE_BICUBIC)
-
+    const cropped = base.clone().crop(x0, y0, cw, ch).resize(bgW, bgH, Jimp.RESIZE_BICUBIC)
     await saveFrame(outFramesDir, fIdx++, cropped)
   }
 
-  // === Victory banner (extended to fit reward row) ===
+  // === Victory banner (taller to fit reward + XP) ===
   const bannerW = Math.round(bgW * 0.92)
-  const bannerH = 190 // was 132 – extended to fit +10,000 + logo row
-  const banner = new Jimp(
-    bannerW,
-    bannerH,
-    Jimp.cssColorToHex('#0e0a08')
-  )
+  const bannerH = 300 // was 190 – taller so title + reward + XP all fit comfortably
+  const banner = new Jimp(bannerW, bannerH, Jimp.cssColorToHex('#0e0a08'))
   banner.opacity(0.82)
 
   const GOLD_HEX = Jimp.cssColorToHex('rgba(225,184,100,0.9)')
@@ -2756,15 +2870,18 @@ async function victorySequence({
     banner.setPixelColor(GOLD_HEX, bannerW - 1, y)
   }
 
+  // Fonts
   const titleFont = await loadFontBuiltin(64, 'white')
+  const rewardFont = await loadFontBuiltin(58, 'white')
+  const xpFont = await loadFontBuiltin(48, 'white')
+
   const msg = `${winnerName} is victorious!`
+  const rewardText = '+20,000'
+  const xpText = '+5xp'
 
-  // === Dark Coin reward row setup ===
-  const rewardText = '+10,000'
-
-  // Adjust path if DC.svg lives somewhere else, e.g. 'assets/DC.svg'
+  // Logo
   const dcLogoRaw = await Jimp.read('DC.png')
-  const logoTargetH = Math.round(bannerH * 0.35)
+  const logoTargetH = Math.round(bannerH * 0.28) // slightly smaller so both lines breathe
   const logoScale = logoTargetH / dcLogoRaw.bitmap.height
   const dcLogo = dcLogoRaw
     .clone()
@@ -2774,86 +2891,91 @@ async function victorySequence({
       Jimp.RESIZE_BICUBIC
     )
 
-  const rewardTextWidth = Jimp.measureText(titleFont, rewardText)
-  const rewardTextHeight = Jimp.measureTextHeight(
-    titleFont,
-    rewardText,
-    rewardTextWidth
-  )
+  // Measurements
+  const rewardTextWidth = Jimp.measureText(rewardFont, rewardText)
+  const rewardTextHeight = Jimp.measureTextHeight(rewardFont, rewardText, rewardTextWidth)
 
-  // Split banner into top (title) and bottom (reward) sections
-  const titleAreaHeight = Math.round(bannerH * 0.55)
-  const rewardRowTop = VICTORY_BANNER_TOP + titleAreaHeight
-  const rewardRowH = bannerH - titleAreaHeight
+  const xpTextWidth = Jimp.measureText(xpFont, xpText)
+  const xpTextHeight = Jimp.measureTextHeight(xpFont, xpText, xpTextWidth)
+
+  const logoW = dcLogo.bitmap.width
+  const logoH = dcLogo.bitmap.height
+
+  // Split banner into title section + content section
+  const titleAreaHeight = Math.round(bannerH * 0.48) // slightly taller title area
+  const contentTopPad = 10
+  const contentBotPad = 16
+  const contentTop = titleAreaHeight + contentTopPad
+  const contentH = bannerH - titleAreaHeight - contentTopPad - contentBotPad
+
+  // Layout for content: line1 (reward + logo) then line2 (xp)
+  const lineGap = 10
+  const line1H = Math.max(rewardTextHeight, logoH)
+  const totalContentNeeded = line1H + lineGap + xpTextHeight
+  const startYInsideContent = Math.max(
+    0,
+    Math.round((contentH - totalContentNeeded) / 2)
+  )
 
   for (let i = 0; i < VICTORY_BANNER_FRAMES; i++) {
     const z = VICTORY_ZOOM_MAX
     const cw = Math.round(bgW / z)
     const ch = Math.round(bgH / z)
-    const x0 = clamp(
-      Math.round(emoteCenter.cx - cw / 2),
-      0,
-      bgW - cw
-    )
-    const y0 = clamp(
-      Math.round(emoteCenter.cy - ch / 2),
-      0,
-      bgH - ch
-    )
+    const x0 = clamp(Math.round(emoteCenter.cx - cw / 2), 0, bgW - cw)
+    const y0 = clamp(Math.round(emoteCenter.cy - ch / 2), 0, bgH - ch)
+
     const base = await baseEmoteFrame()
-    const cropped = base
-      .clone()
-      .crop(x0, y0, cw, ch)
-      .resize(bgW, bgH, Jimp.RESIZE_BICUBIC)
+    const cropped = base.clone().crop(x0, y0, cw, ch).resize(bgW, bgH, Jimp.RESIZE_BICUBIC)
 
     const bx = Math.round((bgW - bannerW) / 2)
     const by = VICTORY_BANNER_TOP
     const frame = cropped
 
-    // Draw banner
+    // Draw banner (taller box behind all text)
     frame.composite(banner, bx, by)
 
-    // === Top: "X is victorious!" ===
+    // Push all text DOWN with more internal padding so it sits cleanly inside the box
+    const titlePadTop = 26
+    const titlePadX = 24
+
+    // === Title ===
     frame.print(
       titleFont,
-      bx + 24,
-      by + 18,
+      bx + titlePadX,
+      by + titlePadTop,
       {
         text: msg,
         alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER,
         alignmentY: Jimp.VERTICAL_ALIGN_MIDDLE,
       },
-      bannerW - 48,
-      titleAreaHeight - 36
+      bannerW - titlePadX * 2,
+      titleAreaHeight - titlePadTop - 10
     )
 
-    // === Bottom: "+10,000 [DC logo]" centered as a group ===
-    const logoW = dcLogo.bitmap.width
-    const logoH = dcLogo.bitmap.height
+    // === Content area origin (inside the banner) ===
+    const contentOriginY = by + contentTop + startYInsideContent
+
+    // Line 1: "+10,000 [DC logo]" centered as a group
     const groupW = rewardTextWidth + 16 + logoW
-
     const groupX = bx + Math.round((bannerW - groupW) / 2)
-    const rewardY =
-      rewardRowTop +
-      Math.round((rewardRowH - rewardTextHeight) / 2)
-    const logoY =
-      rewardRowTop + Math.round((rewardRowH - logoH) / 2)
 
-    // Text: +10,000
-    frame.print(titleFont, groupX, rewardY, rewardText)
+    const rewardY = contentOriginY + Math.round((line1H - rewardTextHeight) / 2)
+    const logoY = contentOriginY + Math.round((line1H - logoH) / 2)
 
-    // Logo: Dark Coin
-    frame.composite(
-      dcLogo,
-      groupX + rewardTextWidth + 16,
-      logoY
-    )
+    frame.print(rewardFont, groupX, rewardY, rewardText)
+    frame.composite(dcLogo, groupX + rewardTextWidth + 16, logoY)
+
+    // Line 2: "+5xp" centered below
+    const xpY = contentOriginY + line1H + lineGap
+    const xpX = bx + Math.round((bannerW - xpTextWidth) / 2)
+    frame.print(xpFont, xpX, xpY, xpText)
 
     await saveFrame(outFramesDir, fIdx++, frame)
   }
 
   return fIdx
 }
+
 
 
 async function fadeOutDefeated({
@@ -3025,6 +3147,7 @@ async function createFightFrames({
   bMoveMetaC,
   audioTimeline,
   effectIcons,
+  versusImagePath = null,
 }) {
   ensureDir(outFramesDir)
   await emptyDir(outFramesDir)
@@ -3032,6 +3155,47 @@ async function createFightFrames({
   const bg = await Jimp.read(backgroundPath)
   const bgW = bg.bitmap.width
   const bgH = bg.bitmap.height
+
+  const fadeFrames = 18   // ~0.6s @ 30fps (tweak)
+  const holdFrames = 24   // ~0.8s
+
+  
+
+
+  async function writeVsIntro() {
+    if (!versusImagePath) return
+
+    let vs = await Jimp.read(versusImagePath)
+    // ensure exact size
+    vs = vs.cover(bgW, bgH)
+
+    const black = new Jimp(bgW, bgH, 0x000000ff)
+
+    // Fade IN: black -> VS
+    for (let i = 0; i < fadeFrames; i++) {
+      const t = i / Math.max(1, fadeFrames - 1)
+      const frame = black.clone()
+      frame.composite(vs.clone().opacity(t), 0, 0)
+      await saveFrame(outFramesDir, fIdx++, frame)
+    }
+
+    // Hold
+    for (let i = 0; i < holdFrames; i++) {
+      await saveFrame(outFramesDir, fIdx++, vs.clone())
+    }
+
+    // Fade OUT: VS -> battle background
+    for (let i = 0; i < fadeFrames; i++) {
+      const t = i / Math.max(1, fadeFrames - 1)
+      const frame = bg.clone()
+      frame.composite(vs.clone().opacity(1 - t), 0, 0)
+      await saveFrame(outFramesDir, fIdx++, frame)
+    }
+  }
+
+  // NEW: write the VS intro BEFORE any fight animation begins
+  await writeVsIntro()
+
 
   let A_idle = await Jimp.read(spriteAPath)
   let B_idle = await Jimp.read(spriteBPath)
@@ -3121,7 +3285,17 @@ async function createFightFrames({
   // Effect stacks state
   const A_effectTotals = {}
   const B_effectTotals = {}
-  const effectTotalsFont = await loadFontBuiltin(16, 'white')
+  const applyEffectStacksForMove = makeApplyEffectStacksForMove({
+  A_effectTotals,
+  B_effectTotals,
+  aStats,
+  bStats,
+})
+
+// (do NOT call recomputeCooldownClocks here; cooldown vars aren't initialized yet)
+
+const effectTotalsFont = await loadFontBuiltin(16, 'white')
+
 
   let fIdx = 0
 
@@ -3268,98 +3442,6 @@ async function createFightFrames({
       stats: miniStatsB,
     })
   }
-
-
-
-
-
-     /**
-   * Apply effect stacks after a move resolves.
-   * - Uses effect_potency_base from charObj.
-   * - Buffs & curses apply 2× potency.
-   * - Buffs target self, curses & normal damage target the opponent.
-   * - Stores stacks keyed by lower-case effect name for icon lookup.
-   *
-   * NEW:
-   * - Defender RESIST is a % chance to BLOCK the effect on non-buff moves.
-   * - On resist: no stacks are applied and we return { resisted: true }.
-   */
-  function applyEffectStacksForMove(meta, moveKind, isActorA) {
-    const effectNameRaw = String(
-      meta.effect_name || meta.effect || ''
-    ).trim()
-    const basePotency = Number(
-      meta.effect_potency_base ?? meta.effect_potency ?? 0
-    )
-
-    if (!effectNameRaw || !basePotency) return null
-
-    const isBuffK = moveKind === 'buff' || isBuffMove(meta)
-    const isCurseK = moveKind === 'curse' || isCurseMove(meta)
-
-    let amount
-
-    if (isBuffK || isCurseK) {
-      amount = basePotency * 2
-    }
-    else {
-      amount = Math.ceil(basePotency / 2)
-    }
-
-  
-
-    // Buff ⇒ self, everything else ⇒ opponent
-    const targetSide = isBuffK
-      ? (isActorA ? 'A' : 'B')
-      : (isActorA ? 'B' : 'A')
-
-    const key = effectNameRaw.toLowerCase()
-    const bucket =
-      targetSide === 'A' ? A_effectTotals : B_effectTotals
-
-    // ===== BUFFS: always apply, no resist check =====
-    if (isBuffK) {
-      bucket[key] = (bucket[key] || 0) + amount
-      return {
-        effectName: key,
-        amount,
-        targetSide,
-        resisted: false,
-      }
-    }
-
-    // ===== NON-BUFF EFFECTS: defender can resist =====
-    const defenderStats =
-      targetSide === 'A' ? aStats : bStats
-    const defenderEffects =
-      targetSide === 'A' ? A_effectTotals : B_effectTotals
-
-    const resistChance = computeDefenderResistChance(
-      defenderStats,
-      defenderEffects
-    )
-    const roll = Math.random() * 100
-
-    // Effect RESISTED: no stacks applied
-    if (roll < resistChance) {
-      return {
-        effectName: key,
-        amount: 0,
-        targetSide,
-        resisted: true,
-      }
-    }
-
-    // Effect APPLIES normally
-    bucket[key] = (bucket[key] || 0) + amount
-    return {
-      effectName: key,
-      amount,
-      targetSide,
-      resisted: false,
-    }
-  }
-
 
 
     async function animateEffectPopup({
@@ -3756,34 +3838,71 @@ async function createFightFrames({
   const B_MAX = B_HP
 
 
-  let cdA = 0
-  let cdB = 0
-  let totalCdA = 1
-  let totalCdB = 1
-  const dt = 1 / FIGHT_FPS
+// Cooldown model:
+// - store base cooldown for the *current* move on cooldown
+// - store progress 0..1; per-frame progress increments by dt / effectiveTotal
+// - if speed changes mid-cooldown, effectiveTotal changes immediately and remaining time re-scales
+// ---- Cooldown model (base CD + progress) ----
+let baseCdA = 0
+let baseCdB = 0
+let progA = 1 // 1 = ready
+let progB = 1 // 1 = ready
+
+let cdA = 0
+let cdB = 0
+let totalCdA = 1
+let totalCdB = 1
+
+const dt = 1 / FIGHT_FPS
+
+function recomputeCooldownClocks() {
+  const spA = getEffectiveSpeed(aStats, A_effectTotals)
+  const spB = getEffectiveSpeed(bStats, B_effectTotals)
+
+  totalCdA = Math.max(0.1, computeEffectiveCooldownSeconds(baseCdA, spA) || 0.1)
+  totalCdB = Math.max(0.1, computeEffectiveCooldownSeconds(baseCdB, spB) || 0.1)
+
+  cdA = (baseCdA > 0 && progA < 1) ? roundToTenth((1 - progA) * totalCdA) : 0
+  cdB = (baseCdB > 0 && progB < 1) ? roundToTenth((1 - progB) * totalCdB) : 0
+
+  if (cdA < 0) cdA = 0
+  if (cdB < 0) cdB = 0
+}
+
+function tickCooldowns() {
+  if (baseCdA > 0 && progA < 1) {
+    const spA = getEffectiveSpeed(aStats, A_effectTotals)
+    const totA = Math.max(0.1, computeEffectiveCooldownSeconds(baseCdA, spA))
+    progA = Math.min(1, progA + dt / totA)
+  }
+  if (baseCdB > 0 && progB < 1) {
+    const spB = getEffectiveSpeed(bStats, B_effectTotals)
+    const totB = Math.max(0.1, computeEffectiveCooldownSeconds(baseCdB, spB))
+    progB = Math.min(1, progB + dt / totB)
+  }
+
+  recomputeCooldownClocks()
+}
+
+// initialize
+recomputeCooldownClocks()
+
+
 
 
   // Draw an idle frame and tick cooldown bars down toward 0
     const drawIdleFrameAndTick = async () => {
-    if (cdA > 0) cdA = Math.max(0, cdA - dt)
-    if (cdB > 0) cdB = Math.max(0, cdB - dt)
+      tickCooldowns()
 
-    const frame = bg.clone()
-    frame.composite(A_idle, axFinalX, aY)
-    frame.composite(B_idle, bxFinalX, bY)
+      const frame = bg.clone()
+      frame.composite(A_idle, axFinalX, aY)
+      frame.composite(B_idle, bxFinalX, bY)
 
-    await drawBarsAndEffects(
-      frame,
-      cdA,
-      cdB,
-      A_HP,
-      A_MAX,
-      B_HP,
-      B_MAX
-    )
+      await drawBarsAndEffects(frame, cdA, cdB, A_HP, A_MAX, B_HP, B_MAX)
+      await saveFrame(outFramesDir, fIdx++, frame)
+    }
 
-    await saveFrame(outFramesDir, fIdx++, frame)
-  }
+
 
 
 
@@ -4005,7 +4124,7 @@ async function createFightFrames({
           barW: HEALTH_BAR_W,
           barH: HEALTH_BAR_H,
           frames: 20,
-          popupText: `+${formatPopupNumber(healedA)}`,
+          popupText: `+${formatPopupNumber(healAmount)}`,
           popupStartX: popupX,
           popupStartY: popupY,
           popupRisePx: 36,
@@ -4025,6 +4144,8 @@ async function createFightFrames({
 
         // Apply buff effect to caster, 2× potency (buffs never get resisted)
         const effEv = applyEffectStacksForMove(meta, moveKind, true)
+        recomputeCooldownClocks()
+
         if (effEv && effEv.effectName) {
           // Buffs always applied ⇒ no RESIST popup here
           if (!effEv.resisted && effEv.amount > 0) {
@@ -4071,7 +4192,7 @@ async function createFightFrames({
         barW: HEALTH_BAR_W,
         barH: HEALTH_BAR_H,
         frames: 20,
-        popupText: `+${formatPopupNumber(healedA)}`,
+        popupText: `+${formatPopupNumber(healAmount)}`,
         popupStartX: popupX,
         popupStartY: popupY,
         popupRisePx: 36,
@@ -4090,6 +4211,8 @@ async function createFightFrames({
       B_HP = newHp
 
         const effEv = applyEffectStacksForMove(meta, moveKind, false)
+        recomputeCooldownClocks()
+
       if (effEv && effEv.effectName) {
         if (!effEv.resisted && effEv.amount > 0) {
           fIdx = await animateEffectPopup({
@@ -4523,6 +4646,8 @@ async function createFightFrames({
 
             // Apply effect stacks *after* HP change, with RESIST check
         const effEv = applyEffectStacksForMove(meta, moveKind, isA)
+        recomputeCooldownClocks()
+
         if (effEv && effEv.effectName) {
           if (effEv.resisted) {
             // Defender resisted the effect ⇒ RESIST popup instead
@@ -4573,18 +4698,22 @@ async function createFightFrames({
     if (A_HP <= 0 || B_HP <= 0) break duel_loop
 
     // Cooldowns
-    const cd = Number(meta.cooldown_seconds)
-    if (!Number.isFinite(cd) || cd <= 0) {
+    const cdBase = Number(meta.cooldown_seconds)
+    if (!Number.isFinite(cdBase) || cdBase <= 0) {
       throw new Error(`Runtime move missing cooldown_seconds: ${meta?.name ?? meta?.id ?? '(unknown)'}`)
     }
 
     if (isA) {
-      cdA = cd
-      totalCdA = Math.max(0.01, cd)
+      baseCdA = cdBase
+      progA = 0
     } else {
-      cdB = cd
-      totalCdB = Math.max(0.01, cd)
+      baseCdB = cdBase
+      progB = 0
     }
+
+    // Recompute immediately (so bars reflect the current effective speed)
+    recomputeCooldownClocks()
+
 
 
     for (let i = 0; i < 6; i++) await drawIdleFrameAndTick()
@@ -5107,6 +5236,61 @@ Mood: dark fantasy, Dark Coin arena.
 }
 
 
+// ===================== ADD THIS HELPER (place it above mainOnce) =====================
+// Fixes "TransactionPool.Remember: txn dead: round X outside of A--B" by:
+// - Fetching fresh suggested params immediately before building/signing/sending
+// - Rebuilding + re-signing on expiry errors (retry)
+async function sendGroupedTxnsWithFreshParamsAndRetry({
+  client,
+  houseAccount,
+  buildTxns, // async (params) => [Transaction, ...]
+  attempts = 3,
+  confirmRounds = 12,
+}) {
+  let lastErr = null
+
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      // Always fetch params right before building/signing so they can't go stale
+      const params = await client.getTransactionParams().do()
+
+      const txns = await buildTxns(params)
+      if (!Array.isArray(txns) || txns.length === 0) {
+        throw new Error("buildTxns(params) must return a non-empty txn array")
+      }
+
+      if (txns.length > 1) algosdk.assignGroupID(txns)
+
+      const signedTxns = txns.map((t) => t.signTxn(houseAccount.sk))
+      const { txId } = await client.sendRawTransaction(signedTxns).do()
+
+      const confirmedTxn = await algosdk.waitForConfirmation(
+        client,
+        txId,
+        confirmRounds
+      )
+
+      return { txId, confirmedTxn }
+    } catch (e) {
+      lastErr = e
+      const msg = String(e?.message || e)
+
+      const isRoundExpiry =
+        msg.includes("txn dead") ||
+        msg.includes("outside of") ||
+        msg.includes("TransactionPool.Remember")
+
+      if (!isRoundExpiry || i === attempts) {
+        throw e
+      }
+
+      // else: retry -> fetch new params -> rebuild -> re-sign -> resubmit
+    }
+  }
+
+  throw lastErr || new Error("Transaction failed after retries")
+}
+
 /* ===================== MAIN (single run) ===================== */
 async function mainOnce() {
   ensureDir(OUT_DIR)
@@ -5124,35 +5308,23 @@ async function mainOnce() {
   }
 
   // 2) Pick two characters at random
-  const shuffled = [...validArena].sort(
-    () => Math.random() - 0.5
-  )
+  const shuffled = [...validArena].sort(() => Math.random() - 0.5)
   const arenaA = shuffled[0]
   const arenaB = shuffled[1]
 
   // 3) Build runtime characters from Firebase charObj
-  const A = await prepareArenaCharacter(
-    arenaA,
-    'characterA'
-  )
-  const B = await prepareArenaCharacter(
-    arenaB,
-    'characterB'
-  )
+  const A = await prepareArenaCharacter(arenaA, "characterA")
+  const B = await prepareArenaCharacter(arenaB, "characterB")
 
-  console.log('Using arena characters:')
-  console.log(
-    `  A = ${A.creature_name} (assetId ${arenaA.assetId})`
-  )
-  console.log(
-    `  B = ${B.creature_name} (assetId ${arenaB.assetId})`
-  )
+  console.log("Using arena characters:")
+  console.log(`  A = ${A.creature_name} (assetId ${arenaA.assetId})`)
+  console.log(`  B = ${B.creature_name} (assetId ${arenaB.assetId})`)
 
   // B faces left – flip character AND its move VFX
   await flipAllPngsHorizontally(B.spritesDir)
   await flipAllPngsHorizontally(B.moveVisualsDir)
 
-  const fightDir = path.join(OUT_DIR, 'fight_scene')
+  const fightDir = path.join(OUT_DIR, "fight_scene")
   ensureDir(fightDir)
   await emptyDir(fightDir)
 
@@ -5175,14 +5347,8 @@ async function mainOnce() {
     }
   }
 
-  const statsPanelAPath = path.join(
-    fightDir,
-    'stats_A.png'
-  )
-  const statsPanelBPath = path.join(
-    fightDir,
-    'stats_B.png'
-  )
+  const statsPanelAPath = path.join(fightDir, "stats_A.png")
+  const statsPanelBPath = path.join(fightDir, "stats_B.png")
   await renderStatsPanel({
     outPath: statsPanelAPath,
     creatureName: `${A.creature_name}`,
@@ -5206,14 +5372,8 @@ async function mainOnce() {
     typeIcons,
   })
 
-  const movePanelAPath = path.join(
-    fightDir,
-    'moves_A.png'
-  )
-  const movePanelBPath = path.join(
-    fightDir,
-    'moves_B.png'
-  )
+  const movePanelAPath = path.join(fightDir, "moves_A.png")
+  const movePanelBPath = path.join(fightDir, "moves_B.png")
 
   const moveAVisualA = A.moveAEffectPath
   const moveAVisualB = B.moveAEffectPath
@@ -5231,7 +5391,7 @@ async function mainOnce() {
     statIcons,
     typeIcons,
     effectIcons,
-    stats: A.stats
+    stats: A.stats,
   })
   await renderMoveBoardPanel({
     outPath: movePanelBPath,
@@ -5242,7 +5402,7 @@ async function mainOnce() {
     statIcons,
     typeIcons,
     effectIcons,
-    stats: B.stats
+    stats: B.stats,
   })
 
   const spriteAIdle = A.spriteIdlePath
@@ -5257,61 +5417,53 @@ async function mainOnce() {
   const spriteBMoveB = B.spriteMoveBPath
   const spriteBMoveC = B.spriteMoveCPath
 
-  const framesDir = path.join(fightDir, 'frames')
+  const framesDir = path.join(fightDir, "frames")
   const audioTimeline = makeAudioTimeline()
-  const { frames, winnerSide, loserSide, winnerName } = await createFightFrames({
-    aName: A.creature_name,
-    bName: B.creature_name,
-    backgroundPath: bgPath,
-    spriteAPath: spriteAIdle,
-    spriteBPath: spriteBIdle,
-    spriteAEmotePath: spriteAEmote,
-    spriteBEmotePath: spriteBEmote,
-    spriteAMoveAPath: spriteAMoveA,
-    spriteBMoveAPath: spriteBMoveA,
-    spriteAMoveBPath: spriteAMoveB,
-    spriteBMoveBPath: spriteBMoveB,
-    spriteAMoveCPath: spriteAMoveC,
-    spriteBMoveCPath: spriteBMoveC,
-    moveAVisualAPath: moveAVisualA,
-    moveAVisualBPath: moveAVisualB,
-    moveBVisualAPath: moveBVisualA,
-    moveBVisualBPath: moveBVisualB,
-    moveCVisualAPath: moveCVisualA,
-    moveCVisualBPath: moveCVisualB,
-    statsPanelAPath,
-    statsPanelBPath,
-    movePanelAPath,
-    movePanelBPath,
-    outFramesDir: framesDir,
-    scaleFraction: FIGHT_SCALE_FRACTION,
-    aStats: A.stats,
-    bStats: B.stats,
-    aTypes: A.types,
-    bTypes: B.types,
-    aMoveMetaA: A.moveA,
-    aMoveMetaB: A.moveB,
-    aMoveMetaC: A.moveC,
-    bMoveMetaA: B.moveA,
-    bMoveMetaB: B.moveB,
-    bMoveMetaC: B.moveC,
-    audioTimeline,
-    effectIcons,
-  })
+  const { frames, winnerSide, loserSide, winnerName } =
+    await createFightFrames({
+      aName: A.creature_name,
+      bName: B.creature_name,
+      backgroundPath: bgPath,
+      spriteAPath: spriteAIdle,
+      spriteBPath: spriteBIdle,
+      spriteAEmotePath: spriteAEmote,
+      spriteBEmotePath: spriteBEmote,
+      spriteAMoveAPath: spriteAMoveA,
+      spriteBMoveAPath: spriteBMoveA,
+      spriteAMoveBPath: spriteAMoveB,
+      spriteBMoveBPath: spriteBMoveB,
+      spriteAMoveCPath: spriteAMoveC,
+      spriteBMoveCPath: spriteBMoveC,
+      moveAVisualAPath: moveAVisualA,
+      moveAVisualBPath: moveAVisualB,
+      moveBVisualAPath: moveBVisualA,
+      moveBVisualBPath: moveBVisualB,
+      moveCVisualAPath: moveCVisualA,
+      moveCVisualBPath: moveCVisualB,
+      statsPanelAPath,
+      statsPanelBPath,
+      movePanelAPath,
+      movePanelBPath,
+      outFramesDir: framesDir,
+      scaleFraction: FIGHT_SCALE_FRACTION,
+      aStats: A.stats,
+      bStats: B.stats,
+      aTypes: A.types,
+      bTypes: B.types,
+      aMoveMetaA: A.moveA,
+      aMoveMetaB: A.moveB,
+      aMoveMetaC: A.moveC,
+      bMoveMetaA: B.moveA,
+      bMoveMetaB: B.moveB,
+      bMoveMetaC: B.moveC,
+      audioTimeline,
+      effectIcons,
+    })
 
-  console.log(
-    `Fight frames created: ${frames} frames at ${FIGHT_FPS} fps`
-  )
+  console.log(`Fight frames created: ${frames} frames at ${FIGHT_FPS} fps`)
 
-    const silentVideo = path.join(
-    fightDir,
-    'character_duel.mp4'
-  )
-  await stitchFramesToVideo(
-    framesDir,
-    silentVideo,
-    FIGHT_FPS
-  )
+  const silentVideo = path.join(fightDir, "character_duel.mp4")
+  await stitchFramesToVideo(framesDir, silentVideo, FIGHT_FPS)
 
   const durationSec = frames / FIGHT_FPS
 
@@ -5323,200 +5475,170 @@ async function mainOnce() {
     durationSec,
   })
 
-
-  console.log('\n=== Summary ===')
+  console.log("\n=== Summary ===")
   console.log(
     `Character A: ${A.creature_name} (${A.identity.race} ${A.identity.class}) [${A.types.join(
-      '/'
+      "/"
     )}]`
   )
   console.log(`  Sprites: ${A.spritesDir}`)
   console.log(
     `Character B: ${B.creature_name} (${B.identity.race} ${B.identity.class}) [${B.types.join(
-      '/'
+      "/"
     )}]`
   )
-  console.log(
-    `  Sprites (flipped): ${B.spritesDir}`
-  )
-  console.log(
-    `Fight BG (old-school castle RPG): ${bgPath}`
-  )
+  console.log(`  Sprites (flipped): ${B.spritesDir}`)
+  console.log(`Fight BG (old-school castle RPG): ${bgPath}`)
   console.log(`Video: ${finalVideo}`)
 
-    // ==== WINNER + LOSER ASSET + HOLDER LOOKUP (post-video) ====
-try {
-  const winnerAssetId =
-    winnerSide === 'A'
-      ? A?.arena?.assetId
-      : B?.arena?.assetId
+  // ==== WINNER + LOSER ASSET + HOLDER LOOKUP (post-video) ====
+  try {
+    const winnerAssetId =
+      winnerSide === "A" ? A?.arena?.assetId : B?.arena?.assetId
 
-  const loserAssetId =
-    loserSide === 'A'
-      ? A?.arena?.assetId
-      : B?.arena?.assetId
+    const loserAssetId =
+      loserSide === "A" ? A?.arena?.assetId : B?.arena?.assetId
 
-  console.log('\n🏆 Fight outcome:')
-  console.log(`  Winner side: ${winnerSide}`)
-  console.log(`  Winner name: ${winnerName}`)
-  console.log(`  Winner assetId: ${winnerAssetId}`)
-  console.log(`  Loser side: ${loserSide}`)
-  console.log(`  Loser assetId: ${loserAssetId}`)
+    console.log("\n🏆 Fight outcome:")
+    console.log(`  Winner side: ${winnerSide}`)
+    console.log(`  Winner name: ${winnerName}`)
+    console.log(`  Winner assetId: ${winnerAssetId}`)
+    console.log(`  Loser side: ${loserSide}`)
+    console.log(`  Loser assetId: ${loserAssetId}`)
 
-  // If you want to find holders for BOTH:
-  if (winnerAssetId) {
-    const winHolders = await findAssetHolders(winnerAssetId, {
-      minAmount: 1,
-      maxAccounts: 1,
-    })
-    console.log(`  Winner holder(s):`)
-    if (!winHolders.length) console.log('   - none found')
-    else {
+    // If you want to find holders for BOTH:
+    if (winnerAssetId) {
+      const winHolders = await findAssetHolders(winnerAssetId, {
+        minAmount: 1,
+        maxAccounts: 1,
+      })
+      console.log(`  Winner holder(s):`)
+      if (!winHolders.length) console.log("   - none found")
+      else {
+        console.log(winHolders[0])
+        console.log(winHolders[0].address)
 
-      console.log(winHolders[0])
-      console.log(winHolders[0].address)
+        // ✅ IMPORTANT CHANGE:
+        // Build/sign/send using fresh params right here (and retry on expiry)
+        const { txId, confirmedTxn } =
+          await sendGroupedTxnsWithFreshParamsAndRetry({
+            client,
+            houseAccount,
+            attempts: 3,
+            confirmRounds: 12,
+            buildTxns: async (params) => {
+              let txns = []
 
-      let txns = []
+              // ---------- TXN 1: reward ----------
+              let appArgs1 = [new Uint8Array(Buffer.from("reward"))]
 
-      // ---------- TXN 1: reward ----------
-      let appArgs1 = [
-        new Uint8Array(Buffer.from("reward")),
-      ]
+              let accounts1 = [winHolders[0].address]
+              let foreignApps1 = []
+              let foreignAssets1 = [winnerAssetId, loserAssetId, 1088771340]
+              let boxes1 = []
 
-      let accounts1 = [winHolders[0].address]
-      let foreignApps1 = []
-      let foreignAssets1 = [winnerAssetId, loserAssetId, 1088771340]
-      let boxes1 = []
+              const rewardTxn = algosdk.makeApplicationNoOpTxn(
+                houseAccount.addr, // or the hard-coded address if that's the actual sender
+                params,
+                3339943603, // reward app ID
+                appArgs1,
+                accounts1,
+                foreignApps1,
+                foreignAssets1,
+                undefined,
+                undefined,
+                undefined,
+                boxes1
+              )
 
-      const rewardTxn = algosdk.makeApplicationNoOpTxn(
-        houseAccount.addr,        // or the hard-coded address if that's the actual sender
-        params,
-        3339943603,               // reward app ID
-        appArgs1,
-        accounts1,
-        foreignApps1,
-        foreignAssets1,
-        undefined,
-        undefined,
-        undefined,
-        boxes1
-      )
+              txns.push(rewardTxn)
 
-      txns.push(rewardTxn)
+              // ---------- TXN 2: grantXp ----------
+              let appArgs2 = [
+                new Uint8Array(Buffer.from("grantXp")),
+                algosdk.encodeUint64(5),
+              ]
 
-      // ---------- TXN 2: grantXp ----------
-      let appArgs2 = [
-        new Uint8Array(Buffer.from("grantXp")),
-        algosdk.encodeUint64(5),
-      ]
+              let accounts2 = []
+              let foreignApps2 = []
+              let foreignAssets2 = [winnerAssetId]
 
-      let accounts2 = []
-      let foreignApps2 = []
-      let foreignAssets2 = [winnerAssetId]
+              let assetInt = longToByteArray(winnerAssetId)
+              let assetBox = new Uint8Array([
+                ...assetInt,
+                ...new Uint8Array(Buffer.from("xp")),
+              ])
+              let boxes2 = [{ appIndex: 0, name: assetBox }] // 0 == current app
 
-      let assetInt = longToByteArray(winnerAssetId)
-      let assetBox = new Uint8Array([...assetInt, ...new Uint8Array(Buffer.from("xp"))])
-      let boxes2 = [{ appIndex: 0, name: assetBox }] // 0 == current app
+              const xpTxn = algosdk.makeApplicationNoOpTxn(
+                houseAccount.addr, // same sender if they should both be from house
+                params,
+                1870514811, // xp app ID
+                appArgs2,
+                accounts2,
+                foreignApps2,
+                foreignAssets2,
+                undefined,
+                undefined,
+                undefined,
+                boxes2
+              )
 
-      const xpTxn = algosdk.makeApplicationNoOpTxn(
-        houseAccount.addr,        // same sender if they should both be from house
-        params,
-        1870514811,               // xp app ID
-        appArgs2,
-        accounts2,
-        foreignApps2,
-        foreignAssets2,
-        undefined,
-        undefined,
-        undefined,
-        boxes2
-      )
+              txns.push(xpTxn)
 
-      txns.push(xpTxn)
+              return txns
+            },
+          })
 
-      // ---------- GROUP + SIGN ----------
-      if (txns.length > 1) {
-        algosdk.assignGroupID(txns) // mutates txns in place
+        console.log("✅ Submitted group txId:", txId)
+        console.log(confirmedTxn)
       }
-
-      const signedTxns = txns.map((t) => t.signTxn(houseAccount.sk))
-
-      // ---------- SUBMIT ----------
-      let { txId } = await client.sendRawTransaction(signedTxns).do()
-      let confirmedTxn = await algosdk.waitForConfirmation(client, txId, 4)
-
-      console.log(confirmedTxn)
-
-
     }
+  } catch (e) {
+    console.warn("⚠️ Outcome holder lookup failed:", e?.message || e)
   }
 
-  
-} catch (e) {
-  console.warn('⚠️ Outcome holder lookup failed:', e?.message || e)
-}
-
-
-
-  // === Optional YouTube upload ===
-  // const durationSec = frames / FIGHT_FPS
-  // try {
-  //   const meta = makeYouTubeMetadataShorts({
-  //     aName: A.creature_name,
-  //     aTypes: A.types,
-  //     aMoves: [A.moveA, A.moveB],
-  //     bName: B.creature_name,
-  //     bTypes: B.types,
-  //     bMoves: [B.moveA, B.moveB],
-  //     durationSec,
-  //   })
-  //   const videoId = await uploadToYouTube({
-  //     filePath: finalVideo,
-  //     title: meta.title,
-  //     description: meta.description,
-  //     tags: meta.tags,
-  //     categoryId: meta.categoryId,
-  //     privacyStatus: 'public',
-  //     madeForKids: false,
-  //   })
-  //   if (videoId) {
-  //     const manifest = {
-  //       uploaded: true,
-  //       videoId,
-  //       url: `https://youtu.be/${videoId}`,
-  //       title: meta.title,
-  //       descriptionPreview:
-  //         meta.description.slice(0, 140) +
-  //         (meta.description.length > 140 ? '…' : ''),
-  //       a: {
-  //         name: A.creature_name,
-  //         identity: A.identity,
-  //         types: A.types,
-  //         moves: [A.moveA, A.moveB],
-  //       },
-  //       b: {
-  //         name: B.creature_name,
-  //         identity: B.identity,
-  //         types: B.types,
-  //         moves: [B.moveA, B.moveB],
-  //       },
-  //       durationSec,
-  //     }
-  //     await fsp.writeFile(
-  //       path.join(fightDir, 'upload_manifest.json'),
-  //       JSON.stringify(manifest, null, 2)
-  //     )
-  //     console.log(
-  //       '📝 Upload manifest saved:',
-  //       path.join(fightDir, 'upload_manifest.json')
-  //     )
-  //   }
-  // } catch (e) {
-  //   console.warn(
-  //     '⚠️ YouTube upload step failed:',
-  //     e?.message || e
-  //   )
-  // }
+  try {
+    const meta = makeYouTubeMetadataShorts({
+      aName: A.creature_name,
+      bName: B.creature_name,
+      durationSec,
+    })
+    const videoId = await uploadToYouTube({
+      filePath: finalVideo,
+      title: meta.title,
+      description: meta.description,
+      tags: meta.tags,
+      categoryId: meta.categoryId,
+      privacyStatus: 'public',
+      madeForKids: false,
+    })
+    if (videoId) {
+      const manifest = {
+        uploaded: true,
+        videoId,
+        url: `https://youtu.be/${videoId}`,
+        title: meta.title,
+        descriptionPreview:
+          meta.description.slice(0, 140) +
+          (meta.description.length > 140 ? '…' : ''),
+        durationSec,
+      }
+      await fsp.writeFile(
+        path.join(fightDir, 'upload_manifest.json'),
+        JSON.stringify(manifest, null, 2)
+      )
+      console.log(
+        '📝 Upload manifest saved:',
+        path.join(fightDir, 'upload_manifest.json')
+      )
+    }
+  } catch (e) {
+    console.warn(
+      '⚠️ YouTube upload step failed:',
+      e?.message || e
+    )
+  }
 }
 
 /* ===================== SCHEDULER ===================== */
