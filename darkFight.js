@@ -20,6 +20,9 @@ import algosdk from 'algosdk'
 import { initializeApp, getApps } from 'firebase/app'
 import { getFirestore, doc, getDoc } from 'firebase/firestore/lite'
 
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "firebase/storage"
+
+
 const WAV = wavPkg?.default ?? wavPkg
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path)
@@ -91,7 +94,15 @@ let params = await client.getTransactionParams().do()
 /* ===================== YOUTUBE/OAUTH CONFIG ===================== */
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET
+let GOOGLE_REFRESH_TOKEN = ""
 
+const houseAccount =  algosdk.mnemonicToSecretKey("")
+
+
+// Firebase public config (to fetch creds/creds.GOOGLE_REFRESH_TOKEN and chars)
+const firebaseConfig = {
+  
+}
 const firebase_app =
   getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
 const db = getFirestore(firebase_app)
@@ -5297,9 +5308,7 @@ async function mainOnce() {
 
   // 1) Load arena characters from Algorand app + Firestore
   const arenaChars = await fetchArenaCharacters()
-  const validArena = arenaChars.filter(
-    (c) => c.exists && c.char && c.char.charObj
-  )
+  const validArena = arenaChars.filter((c) => c.exists && c.char && c.char.charObj)
 
   if (validArena.length < 2) {
     throw new Error(
@@ -5328,11 +5337,7 @@ async function mainOnce() {
   ensureDir(fightDir)
   await emptyDir(fightDir)
 
-  const bgPath = await generateFightBackground(
-    A.creature_name,
-    B.creature_name,
-    fightDir
-  )
+  const bgPath = await generateFightBackground(A.creature_name, B.creature_name, fightDir)
   const { W: bgW, H: bgH } = parseSize(FIGHT_BG_SIZE)
 
   const statIcons = await loadStatIcons()
@@ -5405,60 +5410,48 @@ async function mainOnce() {
     stats: B.stats,
   })
 
-  const spriteAIdle = A.spriteIdlePath
-  const spriteAEmote = A.spriteEmotePath
-  const spriteAMoveA = A.spriteMoveAPath
-  const spriteAMoveB = A.spriteMoveBPath
-  const spriteAMoveC = A.spriteMoveCPath
-
-  const spriteBIdle = B.spriteIdlePath
-  const spriteBEmote = B.spriteEmotePath
-  const spriteBMoveA = B.spriteMoveAPath
-  const spriteBMoveB = B.spriteMoveBPath
-  const spriteBMoveC = B.spriteMoveCPath
-
   const framesDir = path.join(fightDir, "frames")
   const audioTimeline = makeAudioTimeline()
-  const { frames, winnerSide, loserSide, winnerName } =
-    await createFightFrames({
-      aName: A.creature_name,
-      bName: B.creature_name,
-      backgroundPath: bgPath,
-      spriteAPath: spriteAIdle,
-      spriteBPath: spriteBIdle,
-      spriteAEmotePath: spriteAEmote,
-      spriteBEmotePath: spriteBEmote,
-      spriteAMoveAPath: spriteAMoveA,
-      spriteBMoveAPath: spriteBMoveA,
-      spriteAMoveBPath: spriteAMoveB,
-      spriteBMoveBPath: spriteBMoveB,
-      spriteAMoveCPath: spriteAMoveC,
-      spriteBMoveCPath: spriteBMoveC,
-      moveAVisualAPath: moveAVisualA,
-      moveAVisualBPath: moveAVisualB,
-      moveBVisualAPath: moveBVisualA,
-      moveBVisualBPath: moveBVisualB,
-      moveCVisualAPath: moveCVisualA,
-      moveCVisualBPath: moveCVisualB,
-      statsPanelAPath,
-      statsPanelBPath,
-      movePanelAPath,
-      movePanelBPath,
-      outFramesDir: framesDir,
-      scaleFraction: FIGHT_SCALE_FRACTION,
-      aStats: A.stats,
-      bStats: B.stats,
-      aTypes: A.types,
-      bTypes: B.types,
-      aMoveMetaA: A.moveA,
-      aMoveMetaB: A.moveB,
-      aMoveMetaC: A.moveC,
-      bMoveMetaA: B.moveA,
-      bMoveMetaB: B.moveB,
-      bMoveMetaC: B.moveC,
-      audioTimeline,
-      effectIcons,
-    })
+
+  const { frames, winnerSide, loserSide, winnerName } = await createFightFrames({
+    aName: A.creature_name,
+    bName: B.creature_name,
+    backgroundPath: bgPath,
+    spriteAPath: A.spriteIdlePath,
+    spriteBPath: B.spriteIdlePath,
+    spriteAEmotePath: A.spriteEmotePath,
+    spriteBEmotePath: B.spriteEmotePath,
+    spriteAMoveAPath: A.spriteMoveAPath,
+    spriteBMoveAPath: B.spriteMoveAPath,
+    spriteAMoveBPath: A.spriteMoveBPath,
+    spriteBMoveBPath: B.spriteMoveBPath,
+    spriteAMoveCPath: A.spriteMoveCPath,
+    spriteBMoveCPath: B.spriteMoveCPath,
+    moveAVisualAPath: moveAVisualA,
+    moveAVisualBPath: moveAVisualB,
+    moveBVisualAPath: moveBVisualA,
+    moveBVisualBPath: moveBVisualB,
+    moveCVisualAPath: moveCVisualA,
+    moveCVisualBPath: moveCVisualB,
+    statsPanelAPath,
+    statsPanelBPath,
+    movePanelAPath,
+    movePanelBPath,
+    outFramesDir: framesDir,
+    scaleFraction: FIGHT_SCALE_FRACTION,
+    aStats: A.stats,
+    bStats: B.stats,
+    aTypes: A.types,
+    bTypes: B.types,
+    aMoveMetaA: A.moveA,
+    aMoveMetaB: A.moveB,
+    aMoveMetaC: A.moveC,
+    bMoveMetaA: B.moveA,
+    bMoveMetaB: B.moveB,
+    bMoveMetaC: B.moveC,
+    audioTimeline,
+    effectIcons,
+  })
 
   console.log(`Fight frames created: ${frames} frames at ${FIGHT_FPS} fps`)
 
@@ -5475,29 +5468,10 @@ async function mainOnce() {
     durationSec,
   })
 
-  console.log("\n=== Summary ===")
-  console.log(
-    `Character A: ${A.creature_name} (${A.identity.race} ${A.identity.class}) [${A.types.join(
-      "/"
-    )}]`
-  )
-  console.log(`  Sprites: ${A.spritesDir}`)
-  console.log(
-    `Character B: ${B.creature_name} (${B.identity.race} ${B.identity.class}) [${B.types.join(
-      "/"
-    )}]`
-  )
-  console.log(`  Sprites (flipped): ${B.spritesDir}`)
-  console.log(`Fight BG (old-school castle RPG): ${bgPath}`)
-  console.log(`Video: ${finalVideo}`)
-
   // ==== WINNER + LOSER ASSET + HOLDER LOOKUP (post-video) ====
   try {
-    const winnerAssetId =
-      winnerSide === "A" ? A?.arena?.assetId : B?.arena?.assetId
-
-    const loserAssetId =
-      loserSide === "A" ? A?.arena?.assetId : B?.arena?.assetId
+    const winnerAssetId = winnerSide === "A" ? A?.arena?.assetId : B?.arena?.assetId
+    const loserAssetId = loserSide === "A" ? A?.arena?.assetId : B?.arena?.assetId
 
     console.log("\n🏆 Fight outcome:")
     console.log(`  Winner side: ${winnerSide}`)
@@ -5506,89 +5480,57 @@ async function mainOnce() {
     console.log(`  Loser side: ${loserSide}`)
     console.log(`  Loser assetId: ${loserAssetId}`)
 
-    // If you want to find holders for BOTH:
     if (winnerAssetId) {
-      const winHolders = await findAssetHolders(winnerAssetId, {
-        minAmount: 1,
-        maxAccounts: 1,
-      })
+      const winHolders = await findAssetHolders(winnerAssetId, { minAmount: 1, maxAccounts: 1 })
       console.log(`  Winner holder(s):`)
       if (!winHolders.length) console.log("   - none found")
       else {
-        console.log(winHolders[0])
-        console.log(winHolders[0].address)
+        const { txId, confirmedTxn } = await sendGroupedTxnsWithFreshParamsAndRetry({
+          client,
+          houseAccount,
+          attempts: 3,
+          confirmRounds: 12,
+          buildTxns: async (params) => {
+            let txns = []
 
-        // ✅ IMPORTANT CHANGE:
-        // Build/sign/send using fresh params right here (and retry on expiry)
-        const { txId, confirmedTxn } =
-          await sendGroupedTxnsWithFreshParamsAndRetry({
-            client,
-            houseAccount,
-            attempts: 3,
-            confirmRounds: 12,
-            buildTxns: async (params) => {
-              let txns = []
+            // ---------- TXN 1: reward ----------
+            const rewardTxn = algosdk.makeApplicationNoOpTxn(
+              houseAccount.addr,
+              params,
+              3339943603,
+              [new Uint8Array(Buffer.from("reward"))],
+              [winHolders[0].address],
+              [],
+              [winnerAssetId, loserAssetId, 1088771340],
+              undefined,
+              undefined,
+              undefined,
+              []
+            )
+            txns.push(rewardTxn)
 
-              // ---------- TXN 1: reward ----------
-              let appArgs1 = [new Uint8Array(Buffer.from("reward"))]
+            // ---------- TXN 2: grantXp ----------
+            const assetInt = longToByteArray(winnerAssetId)
+            const assetBox = new Uint8Array([...assetInt, ...new Uint8Array(Buffer.from("xp"))])
 
-              let accounts1 = [winHolders[0].address]
-              let foreignApps1 = []
-              let foreignAssets1 = [winnerAssetId, loserAssetId, 1088771340]
-              let boxes1 = []
+            const xpTxn = algosdk.makeApplicationNoOpTxn(
+              houseAccount.addr,
+              params,
+              1870514811,
+              [new Uint8Array(Buffer.from("grantXp")), algosdk.encodeUint64(5)],
+              [],
+              [],
+              [winnerAssetId],
+              undefined,
+              undefined,
+              undefined,
+              [{ appIndex: 0, name: assetBox }]
+            )
+            txns.push(xpTxn)
 
-              const rewardTxn = algosdk.makeApplicationNoOpTxn(
-                houseAccount.addr, // or the hard-coded address if that's the actual sender
-                params,
-                3339943603, // reward app ID
-                appArgs1,
-                accounts1,
-                foreignApps1,
-                foreignAssets1,
-                undefined,
-                undefined,
-                undefined,
-                boxes1
-              )
-
-              txns.push(rewardTxn)
-
-              // ---------- TXN 2: grantXp ----------
-              let appArgs2 = [
-                new Uint8Array(Buffer.from("grantXp")),
-                algosdk.encodeUint64(5),
-              ]
-
-              let accounts2 = []
-              let foreignApps2 = []
-              let foreignAssets2 = [winnerAssetId]
-
-              let assetInt = longToByteArray(winnerAssetId)
-              let assetBox = new Uint8Array([
-                ...assetInt,
-                ...new Uint8Array(Buffer.from("xp")),
-              ])
-              let boxes2 = [{ appIndex: 0, name: assetBox }] // 0 == current app
-
-              const xpTxn = algosdk.makeApplicationNoOpTxn(
-                houseAccount.addr, // same sender if they should both be from house
-                params,
-                1870514811, // xp app ID
-                appArgs2,
-                accounts2,
-                foreignApps2,
-                foreignAssets2,
-                undefined,
-                undefined,
-                undefined,
-                boxes2
-              )
-
-              txns.push(xpTxn)
-
-              return txns
-            },
-          })
+            return txns
+          },
+        })
 
         console.log("✅ Submitted group txId:", txId)
         console.log(confirmedTxn)
@@ -5598,21 +5540,101 @@ async function mainOnce() {
     console.warn("⚠️ Outcome holder lookup failed:", e?.message || e)
   }
 
+  // ---------------------------
+  // NEW: Upload video to regular Firebase Storage BEFORE YouTube
+  // ---------------------------
+  let storageUpload = null
   try {
     const meta = makeYouTubeMetadataShorts({
       aName: A.creature_name,
       bName: B.creature_name,
       durationSec,
     })
+
+    const slugify = (s) =>
+      String(s || "")
+        .toLowerCase()
+        .trim()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 80)
+
+    const shortId = () => `${Date.now()}_${Math.random().toString(16).slice(2, 10)}`
+
+    // Storage object path (in your Firebase Storage bucket)
+    const objectPath = `fights/${slugify(A.creature_name)}_vs_${slugify(
+      B.creature_name
+    )}_${shortId()}.mp4`
+
+    // Read the mp4 into memory (Buffer is a Uint8Array, works with uploadBytes)
+    const videoBytes = await fsp.readFile(finalVideo)
+
+    // Firebase Storage (regular SDK)
+    const storage = getStorage()
+    const objRef = storageRef(storage, objectPath)
+
+    // customMetadata values MUST be strings
+    const customMetadata = {
+      title: String(meta.title || ""),
+      description: String(meta.description || ""),
+      tags: Array.isArray(meta.tags) ? meta.tags.join(",") : String(meta.tags || ""),
+      categoryId: String(meta.categoryId || ""),
+      durationSec: String(durationSec || ""),
+      frames: String(frames || ""),
+      fps: String(FIGHT_FPS || ""),
+      aName: String(A.creature_name || ""),
+      bName: String(B.creature_name || ""),
+      aAssetId: String(A?.arena?.assetId ?? arenaA?.assetId ?? ""),
+      bAssetId: String(B?.arena?.assetId ?? arenaB?.assetId ?? ""),
+      winnerSide: String(winnerSide || ""),
+      winnerName: String(winnerName || ""),
+      loserSide: String(loserSide || ""),
+      bgPath: String(bgPath || ""),
+    }
+
+    console.log("\n☁️ Uploading video to Firebase Storage (regular SDK)...")
+    const snap = await uploadBytes(objRef, videoBytes, {
+      contentType: "video/mp4",
+      cacheControl: "public, max-age=31536000",
+      customMetadata,
+    })
+
+    const downloadURL = await getDownloadURL(snap.ref)
+
+    storageUpload = {
+      bucket: snap.metadata.bucket,
+      fullPath: snap.metadata.fullPath,
+      name: snap.metadata.name,
+      downloadURL,
+    }
+
+    console.log("✅ Firebase Storage upload complete:")
+    console.log(`  ${snap.metadata.fullPath}`)
+    console.log(`  ${downloadURL}`)
+  } catch (e) {
+    console.warn("⚠️ Firebase Storage upload step failed:", e?.message || e)
+  }
+
+  // ---------------------------
+  // YouTube upload (now after Storage upload)
+  // ---------------------------
+  try {
+    const meta = makeYouTubeMetadataShorts({
+      aName: A.creature_name,
+      bName: B.creature_name,
+      durationSec,
+    })
+
     const videoId = await uploadToYouTube({
       filePath: finalVideo,
       title: meta.title,
       description: meta.description,
       tags: meta.tags,
       categoryId: meta.categoryId,
-      privacyStatus: 'public',
+      privacyStatus: "public",
       madeForKids: false,
     })
+
     if (videoId) {
       const manifest = {
         uploaded: true,
@@ -5620,26 +5642,22 @@ async function mainOnce() {
         url: `https://youtu.be/${videoId}`,
         title: meta.title,
         descriptionPreview:
-          meta.description.slice(0, 140) +
-          (meta.description.length > 140 ? '…' : ''),
+          meta.description.slice(0, 140) + (meta.description.length > 140 ? "…" : ""),
         durationSec,
+        firebaseStorage: storageUpload,
       }
+
       await fsp.writeFile(
-        path.join(fightDir, 'upload_manifest.json'),
+        path.join(fightDir, "upload_manifest.json"),
         JSON.stringify(manifest, null, 2)
       )
-      console.log(
-        '📝 Upload manifest saved:',
-        path.join(fightDir, 'upload_manifest.json')
-      )
+      console.log("📝 Upload manifest saved:", path.join(fightDir, "upload_manifest.json"))
     }
   } catch (e) {
-    console.warn(
-      '⚠️ YouTube upload step failed:',
-      e?.message || e
-    )
+    console.warn("⚠️ YouTube upload step failed:", e?.message || e)
   }
 }
+
 
 /* ===================== SCHEDULER ===================== */
 async function runLoop() {
